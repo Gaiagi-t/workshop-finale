@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; padding: 4px 2px; }
+  #mic-btn {
+    background: #1b98e0;
+    color: white;
+    border: none;
+    padding: 7px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.88rem;
+    transition: background 0.15s;
+  }
+  #mic-btn.recording { background: #dc3545; }
+  #mic-btn:disabled  { background: #adb5bd; cursor: not-allowed; }
+  #status {
+    font-size: 0.78rem;
+    color: #6c757d;
+    margin: 5px 0 4px;
+  }
+  #transcript {
+    font-size: 0.85rem;
+    padding: 6px 8px;
+    background: #f4f8fc;
+    border-radius: 4px;
+    min-height: 26px;
+    color: #1a2b3c;
+    border: 1px solid #dee2e6;
+  }
+</style>
+</head>
+<body>
+
+<button id="mic-btn" onclick="toggle()">🎤 Parla</button>
+<div id="status">Clicca per dettare in italiano</div>
+<div id="transcript"></div>
+
+<script>
+var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+var rec = null;
+var listening = false;
+var finalText = '';
+
+/* ── Streamlit component protocol ─────────────────────────────── */
+function sendValue(val) {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: 'streamlit:setComponentValue',
+    value: val,
+    dataType: 'any'
+  }, '*');
+}
+
+function setHeight(h) {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: 'streamlit:setFrameHeight',
+    height: h
+  }, '*');
+}
+
+window.parent.postMessage({
+  isStreamlitMessage: true,
+  type: 'streamlit:componentReady',
+  apiVersion: 1
+}, '*');
+
+setHeight(95);
+
+/* ── Speech Recognition ───────────────────────────────────────── */
+if (SpeechRec) {
+  rec = new SpeechRec();
+  rec.lang = 'it-IT';
+  rec.continuous = false;
+  rec.interimResults = true;
+
+  rec.onresult = function(e) {
+    var interim = '', final = '';
+    for (var i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) final += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    if (final) finalText = final;
+    document.getElementById('transcript').textContent = final || interim;
+  };
+
+  rec.onend = function() {
+    listening = false;
+    document.getElementById('mic-btn').textContent = '🎤 Parla';
+    document.getElementById('mic-btn').classList.remove('recording');
+    if (finalText) {
+      document.getElementById('status').textContent = '✅ Testo riconosciuto — inserito nel campo';
+      sendValue(finalText);
+    } else {
+      document.getElementById('status').textContent = 'Nessun testo rilevato. Riprova.';
+    }
+  };
+
+  rec.onerror = function(e) {
+    listening = false;
+    document.getElementById('mic-btn').classList.remove('recording');
+    var msg = e.error === 'not-allowed'
+      ? '⚠️ Permesso microfono negato. Controlla le impostazioni del browser.'
+      : '⚠️ Errore: ' + e.error;
+    document.getElementById('status').textContent = msg;
+  };
+} else {
+  document.getElementById('mic-btn').disabled = true;
+  document.getElementById('status').textContent = '⚠️ Usa Chrome o Edge per il microfono.';
+}
+
+function toggle() {
+  if (!rec) return;
+  if (listening) {
+    rec.stop();
+  } else {
+    finalText = '';
+    document.getElementById('transcript').textContent = '';
+    document.getElementById('status').textContent = '🎙️ Ascolto...';
+    document.getElementById('mic-btn').textContent = '⏹ Stop';
+    document.getElementById('mic-btn').classList.add('recording');
+    try {
+      rec.start();
+      listening = true;
+    } catch(err) {
+      document.getElementById('status').textContent = 'Errore avvio: ' + err.message;
+    }
+  }
+}
+</script>
+</body>
+</html>

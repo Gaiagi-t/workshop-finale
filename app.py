@@ -1,8 +1,10 @@
 import os
 import json
+from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
+import streamlit.components.v1 as components_v1
 
 import config
 from utils.ai_analysis import (
@@ -18,6 +20,12 @@ st.set_page_config(
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
+)
+
+# ── Voice component (Web Speech API, browser-native) ──────────────────────────
+_VOICE_COMPONENT_DIR = Path(__file__).parent / "components" / "voice_input"
+_voice_component = components_v1.declare_component(
+    "voice_input", path=str(_VOICE_COMPONENT_DIR)
 )
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -53,19 +61,15 @@ st.markdown(
     margin-bottom: 0.6rem;
     box-shadow: 0 1px 4px rgba(0,0,0,0.07);
 }}
-.step-card .step-num {{
-    font-weight: 700;
-    color: {config.COLORS['primary']};
-    font-size: 0.9rem;
-}}
-.step-card .step-title {{
-    font-size: 1rem;
-    font-weight: 600;
-    margin: 2px 0;
-}}
-.step-card .step-meta {{
-    font-size: 0.82rem;
-    color: {config.COLORS['text_muted']};
+.step-card .step-num {{ font-weight:700; color:{config.COLORS['primary']}; font-size:0.88rem; }}
+.step-card .step-title {{ font-size:1rem; font-weight:600; margin:2px 0; }}
+.step-card .step-meta {{ font-size:0.82rem; color:{config.COLORS['text_muted']}; }}
+.asis-ref-table {{
+    background: #f4f8fc;
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    border: 1px solid {config.COLORS['border']};
+    margin-bottom: 1.2rem;
 }}
 .hint-box {{
     background: #e8f4fd;
@@ -113,7 +117,7 @@ def go_to(phase: int):
     st.rerun()
 
 
-# ── Voice input helper ────────────────────────────────────────────────────────
+# ── Voice input helpers ───────────────────────────────────────────────────────
 def _apply_transcript(field_key: str):
     tkey = f"__transcript_{field_key}"
     if tkey in st.session_state:
@@ -127,13 +131,18 @@ def voice_text_input(label: str, field_key: str, placeholder: str = "") -> str:
         val = st.text_input(label, key=f"input_{field_key}", placeholder=placeholder)
     with col_m:
         st.write("")
-        if st.button("🎤", key=f"micbtn_{field_key}", help="Registra con microfono"):
-            st.session_state[f"__show_mic_{field_key}"] = True
-    _render_mic(field_key)
+        if st.button("🎤", key=f"micbtn_{field_key}", help="Dettatura vocale"):
+            st.session_state[f"__show_mic_{field_key}"] = not st.session_state.get(
+                f"__show_mic_{field_key}", False
+            )
+            st.rerun()
+    _render_mic_widget(field_key)
     return val
 
 
-def voice_text_area(label: str, field_key: str, placeholder: str = "", height: int = 110) -> str:
+def voice_text_area(
+    label: str, field_key: str, placeholder: str = "", height: int = 110
+) -> str:
     _apply_transcript(field_key)
     col_t, col_m = st.columns([6, 1])
     with col_t:
@@ -143,37 +152,23 @@ def voice_text_area(label: str, field_key: str, placeholder: str = "", height: i
     with col_m:
         st.write("")
         st.write("")
-        if st.button("🎤", key=f"micbtn_{field_key}", help="Registra con microfono"):
-            st.session_state[f"__show_mic_{field_key}"] = True
-    _render_mic(field_key)
+        if st.button("🎤", key=f"micbtn_{field_key}", help="Dettatura vocale"):
+            st.session_state[f"__show_mic_{field_key}"] = not st.session_state.get(
+                f"__show_mic_{field_key}", False
+            )
+            st.rerun()
+    _render_mic_widget(field_key)
     return val
 
 
-def _render_mic(field_key: str):
+def _render_mic_widget(field_key: str):
     if not st.session_state.get(f"__show_mic_{field_key}"):
         return
-    api_key = st.session_state.api_key
-    audio = st.audio_input("🎙️ Parla ora, poi clicca Stop", key=f"audio_{field_key}")
-    col_ok, col_x = st.columns([2, 1])
-    with col_x:
-        if st.button("✕ Annulla", key=f"mic_cancel_{field_key}"):
-            st.session_state[f"__show_mic_{field_key}"] = False
-            st.rerun()
-    if audio:
-        with col_ok:
-            if st.button("✓ Trascrivi", key=f"mic_ok_{field_key}", type="primary"):
-                if not api_key:
-                    st.warning("Inserisci la API Key nella sidebar per usare il microfono.")
-                else:
-                    with st.spinner("Trascrizione..."):
-                        try:
-                            from utils.voice import transcribe_audio
-                            text = transcribe_audio(audio, api_key)
-                            st.session_state[f"__transcript_{field_key}"] = text
-                            st.session_state[f"__show_mic_{field_key}"] = False
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Errore trascrizione: {e}")
+    transcript = _voice_component(key=f"voice_{field_key}", default=None)
+    if transcript:
+        st.session_state[f"__transcript_{field_key}"] = transcript
+        st.session_state[f"__show_mic_{field_key}"] = False
+        st.rerun()
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -211,19 +206,6 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
 
-    st.markdown("---")
-
-    # API key hidden in expander (not prominent)
-    with st.expander("⚙️ Impostazioni"):
-        key_in = st.text_input(
-            "API Key (Anthropic)",
-            value=st.session_state.api_key,
-            type="password",
-            placeholder="sk-ant-...",
-        )
-        if key_in:
-            st.session_state.api_key = key_in
-
     if st.session_state.analysis_result:
         st.markdown("---")
         html = generate_html_report(
@@ -234,28 +216,27 @@ with st.sidebar:
             conversation=st.session_state.chat_messages,
         )
         st.download_button(
-            "📄 Scarica report (PDF via browser)",
+            "📄 Scarica report (HTML → PDF)",
             data=html,
             file_name=f"workshop_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
             mime="text/html",
             use_container_width=True,
-            help="Apri il file nel browser → Ctrl+P → Salva come PDF",
-        )
-        export_json = json.dumps(
-            {
-                "timestamp": datetime.now().isoformat(),
-                "profilo": st.session_state.answers,
-                "asis": st.session_state.asis_steps,
-                "tobe": st.session_state.tobe_steps,
-                "conversazione": st.session_state.chat_messages,
-                "analisi": st.session_state.analysis_result,
-            },
-            ensure_ascii=False,
-            indent=2,
+            help="Apri nel browser → Ctrl+P → Salva come PDF",
         )
         st.download_button(
             "📥 Esporta dati (JSON)",
-            data=export_json,
+            data=json.dumps(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "profilo": st.session_state.answers,
+                    "asis": st.session_state.asis_steps,
+                    "tobe": st.session_state.tobe_steps,
+                    "conversazione": st.session_state.chat_messages,
+                    "analisi": st.session_state.analysis_result,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             file_name=f"workshop_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
             mime="application/json",
             use_container_width=True,
@@ -270,7 +251,11 @@ with st.sidebar:
 # ── Header ────────────────────────────────────────────────────────────────────
 nome = st.session_state.answers.get("q0_nome", "")
 processo = st.session_state.answers.get("q0_processo", "")
-sub = f"{nome} · {processo}" if nome and processo else ("Bentornato/a!" if nome else "Workshop interattivo IFAB")
+sub = (
+    f"{nome} · {processo}"
+    if nome and processo
+    else ("Bentornato/a!" if nome else "Workshop interattivo IFAB")
+)
 
 st.markdown(
     f"""
@@ -312,24 +297,17 @@ di un processo aziendale con l'intelligenza artificiale.
 3. 💬 **Approfondimento** — Un agente AI ti fa domande mirate per arricchire l'analisi
 4. 🤖 **Analisi Finale** — Scenario narrativo, roadmap e analisi rischi
 
-Puoi rispondere **scrivendo** o **parlando** (microfono) in ogni campo.
+Puoi rispondere **scrivendo** o **dettando** con il microfono 🎤 (Chrome/Edge).
             """
         )
         st.markdown("---")
-        st.markdown("### Parlaci di te e del tuo processo")
+        st.markdown("### Parliamo di te e del tuo processo")
 
-        nome_in = voice_text_input(
-            "Nome e cognome *", "w_nome", "Es: Marco Rossi"
-        )
-        ruolo_in = voice_text_input(
-            "Ruolo / funzione", "w_ruolo", "Es: Responsabile Formazione"
-        )
-        org_in = voice_text_input(
-            "Organizzazione", "w_org", "Es: Oil & Steel SpA"
-        )
+        nome_in = voice_text_input("Nome e cognome *", "w_nome", "Es: Marco Rossi")
+        ruolo_in = voice_text_input("Ruolo / funzione", "w_ruolo", "Es: Responsabile Formazione")
+        org_in = voice_text_input("Organizzazione", "w_org", "Es: Oil & Steel SpA")
         processo_in = voice_text_input(
-            "Processo da analizzare *", "w_processo",
-            "Es: Onboarding nuovi fornitori"
+            "Processo da analizzare *", "w_processo", "Es: Onboarding nuovi fornitori"
         )
         descr_in = voice_text_area(
             "Breve descrizione del processo", "w_descr",
@@ -343,13 +321,15 @@ Puoi rispondere **scrivendo** o **parlando** (microfono) in ogni campo.
         st.markdown("")
         if st.button("Inizia il workshop →", type="primary", use_container_width=True):
             if nome_in.strip() and processo_in.strip():
-                st.session_state.answers.update({
-                    "q0_nome": nome_in,
-                    "q0_ruolo": ruolo_in,
-                    "q0_org": org_in,
-                    "q0_processo": processo_in,
-                    "q0_descrizione": descr_in,
-                })
+                st.session_state.answers.update(
+                    {
+                        "q0_nome": nome_in,
+                        "q0_ruolo": ruolo_in,
+                        "q0_org": org_in,
+                        "q0_processo": processo_in,
+                        "q0_descrizione": descr_in,
+                    }
+                )
                 go_to(1)
             else:
                 st.error("Compila almeno nome e processo per continuare.")
@@ -368,8 +348,7 @@ Puoi rispondere **scrivendo** o **parlando** (microfono) in ogni campo.
                 🤖 Analisi Finale · <strong>20'</strong>
               </div>
             </div>
-            <div class="info-card"
-                 style="border-left: 4px solid {config.COLORS['accent']};">
+            <div class="info-card" style="border-left:4px solid {config.COLORS['accent']};">
               <div style="font-weight:600; margin-bottom:0.6rem;">
                 💡 Come scegliere il processo
               </div>
@@ -385,9 +364,32 @@ Puoi rispondere **scrivendo** o **parlando** (microfono) in ogni campo.
             unsafe_allow_html=True,
         )
 
+        # API key — only shown if not already set via env var
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            st.markdown(
+                f"""
+                <div class="info-card" style="border-left:4px solid {config.COLORS['warning']};">
+                  <div style="font-weight:600; margin-bottom:0.5rem;">⚙️ API Key</div>
+                  <div style="font-size:0.82rem; color:{config.COLORS['text_muted']};">
+                    Necessaria per l'analisi AI nella Fase 4.
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            key_in = st.text_input(
+                "Anthropic API Key",
+                value=st.session_state.api_key,
+                type="password",
+                placeholder="sk-ant-...",
+                label_visibility="collapsed",
+            )
+            if key_in:
+                st.session_state.api_key = key_in
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Shared: step form + step cards
+# Shared: step cards + table display
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _step_card(s: dict, is_tobe: bool = False):
@@ -411,7 +413,7 @@ def _step_card(s: dict, is_tobe: bool = False):
 
     st.markdown(
         f"""<div class="step-card">
-          <div class="step-num">Step {s.get('step', '?')}</div>
+          <div class="step-num">Step {s.get('step','?')}</div>
           <div class="step-title">{attivita}</div>
           <div class="step-meta">{' &nbsp;|&nbsp; '.join(meta_parts)}</div>
         </div>""",
@@ -421,6 +423,7 @@ def _step_card(s: dict, is_tobe: bool = False):
 
 def _steps_table(steps: list, is_tobe: bool):
     import pandas as pd
+
     if not steps:
         st.info("Nessuno step inserito.")
         return
@@ -456,6 +459,13 @@ def _steps_table(steps: list, is_tobe: bool):
 # Phase 1 — AS-IS
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _get_tempo(s: str):
+    try:
+        return int(s.strip())
+    except Exception:
+        return None
+
+
 def render_asis():
     pcfg = config.PHASES[1]
     st.markdown(
@@ -468,14 +478,12 @@ def render_asis():
     steps = st.session_state.asis_steps
     n = len(steps)
 
-    # ── Completed steps ───────────────────────────────────────────────────────
     if steps:
         st.markdown(f"**{n} step inserit{'o' if n == 1 else 'i'}:**")
         for s in steps:
             _step_card(s, is_tobe=False)
         st.markdown("")
 
-    # ── Show summary table at end ─────────────────────────────────────────────
     if st.session_state.get("asis_done"):
         st.success(f"✅ Mappatura AS-IS completata — {n} step")
         _steps_table(steps, is_tobe=False)
@@ -489,74 +497,66 @@ def render_asis():
                 st.session_state.asis_done = False
                 st.rerun()
         with col_next:
-            if st.button("Vai alla Mappatura TO-BE →", type="primary", use_container_width=True):
+            if st.button(
+                "Vai alla Mappatura TO-BE →", type="primary", use_container_width=True
+            ):
                 go_to(2)
         return
 
-    # ── Step form ─────────────────────────────────────────────────────────────
     step_num = n + 1
     st.markdown(
-        f'<div class="hint-box">💡 <em>Descrivi lo step {step_num} del processo. '
-        f'Usa il 🎤 per dettare invece di scrivere.</em></div>',
+        f'<div class="hint-box">💡 <em>Descrivi lo step {step_num}. '
+        f'Premi 🎤 su qualsiasi campo per dettare invece di scrivere (Chrome/Edge).</em></div>',
         unsafe_allow_html=True,
     )
     st.markdown(f"#### ➕ Step {step_num}")
 
-    prefix = f"asis_{step_num}"
+    p = f"asis_{step_num}"
     attivita = voice_text_area(
-        "Descrivi questa attività *", f"{prefix}_att",
-        placeholder="Es: Raccolta documenti richiesti al fornitore",
-        height=90,
+        "Descrivi questa attività *", f"{p}_att",
+        placeholder="Es: Raccolta documenti richiesti al fornitore", height=90
     )
     chi = voice_text_input(
-        "Chi la svolge? *", f"{prefix}_chi",
-        placeholder="Es: Ufficio Acquisti"
+        "Chi la svolge? *", f"{p}_chi", placeholder="Es: Ufficio Acquisti"
     )
     col1, col2 = st.columns(2)
     with col1:
         strumenti = voice_text_input(
-            "Strumenti / sistemi usati", f"{prefix}_str",
-            placeholder="Es: Email, SAP, Excel"
+            "Strumenti / sistemi usati", f"{p}_str", placeholder="Es: Email, SAP, Excel"
         )
     with col2:
         tempo_str = voice_text_input(
-            "Tempo richiesto (minuti)", f"{prefix}_tempo",
-            placeholder="Es: 45"
+            "Tempo richiesto (minuti)", f"{p}_tempo", placeholder="Es: 45"
         )
     problemi = voice_text_area(
-        "Problemi o inefficienze principali", f"{prefix}_prob",
-        placeholder="Es: Documenti spesso incompleti, molte mail avanti-indietro",
-        height=90,
+        "Problemi o inefficienze principali", f"{p}_prob",
+        placeholder="Es: Documenti spesso incompleti, molte mail avanti-indietro", height=90
     )
 
-    def _get_tempo(s):
-        try:
-            return int(s.strip())
-        except Exception:
-            return None
-
     st.markdown("")
-    col_add, col_done = st.columns([1, 1])
+    col_add, col_done = st.columns(2)
 
     with col_add:
-        if st.button(f"+ Aggiungi Step {step_num}", use_container_width=True, type="primary"):
+        if st.button(
+            f"+ Aggiungi Step {step_num}", use_container_width=True, type="primary"
+        ):
             if not attivita.strip() or not chi.strip():
                 st.error("Attività e chi la svolge sono obbligatori.")
             else:
-                step_data = {
-                    "step": step_num,
-                    "attivita": attivita.strip(),
-                    "chi": chi.strip(),
-                    "strumenti": strumenti.strip(),
-                    "tempo": _get_tempo(tempo_str),
-                    "problemi": problemi.strip(),
-                }
-                st.session_state.asis_steps.append(step_data)
-                # Clear draft fields
-                for suffix in ["att", "chi", "str", "tempo", "prob"]:
-                    for prefix_key in [f"input_asis_{step_num}_{suffix}",
-                                       f"__show_mic_asis_{step_num}_{suffix}"]:
-                        st.session_state.pop(prefix_key, None)
+                st.session_state.asis_steps.append(
+                    {
+                        "step": step_num,
+                        "attivita": attivita.strip(),
+                        "chi": chi.strip(),
+                        "strumenti": strumenti.strip(),
+                        "tempo": _get_tempo(tempo_str),
+                        "problemi": problemi.strip(),
+                    }
+                )
+                for sfx in ["att", "chi", "str", "tempo", "prob"]:
+                    for pk in [f"input_asis_{step_num}_{sfx}",
+                                f"__show_mic_asis_{step_num}_{sfx}"]:
+                        st.session_state.pop(pk, None)
                 st.rerun()
 
     with col_done:
@@ -569,13 +569,13 @@ def render_asis():
 
     if n > 0:
         st.markdown("")
-        if st.button("🗑️ Rimuovi ultimo step", use_container_width=True):
+        if st.button("🗑️ Rimuovi ultimo step"):
             st.session_state.asis_steps.pop()
             st.rerun()
 
     col_back, _ = st.columns([1, 3])
     with col_back:
-        if st.button("← Indietro", use_container_width=True):
+        if st.button("← Indietro"):
             go_to(0)
 
 
@@ -592,15 +592,22 @@ def render_tobe():
     processo = st.session_state.answers.get("q0_processo", "il processo")
     st.markdown(f"## 🚀 Come cambierà **{processo}** con l'AI?")
 
+    # ── AS-IS summary table — always visible ───────────────────────────────────
+    total_asis = sum(int(s.get("tempo") or 0) for s in st.session_state.asis_steps)
+    st.markdown(
+        f'<div class="asis-ref-table"><strong>📋 Mappatura AS-IS — riepilogo</strong>'
+        + (f" &nbsp;|&nbsp; ⏱️ Tempo totale: <strong>{total_asis} min</strong>" if total_asis else "")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    _steps_table(st.session_state.asis_steps, is_tobe=False)
+    st.markdown("---")
+
     steps = st.session_state.tobe_steps
     n = len(steps)
 
-    # AS-IS reference panel
-    with st.expander("📋 Riferimento AS-IS", expanded=False):
-        _steps_table(st.session_state.asis_steps, is_tobe=False)
-
     if steps:
-        st.markdown(f"**{n} step inserit{'o' if n == 1 else 'i'}:**")
+        st.markdown(f"**{n} step TO-BE inserit{'o' if n == 1 else 'i'}:**")
         for s in steps:
             _step_card(s, is_tobe=True)
         st.markdown("")
@@ -608,7 +615,6 @@ def render_tobe():
     if st.session_state.get("tobe_done"):
         st.success(f"✅ Mappatura TO-BE completata — {n} step")
         _steps_table(steps, is_tobe=True)
-        total_asis = sum(int(s.get("tempo") or 0) for s in st.session_state.asis_steps)
         total_tobe = sum(int(s.get("tempo") or 0) for s in steps)
         if total_tobe:
             delta = total_asis - total_tobe
@@ -622,7 +628,9 @@ def render_tobe():
                 st.session_state.tobe_done = False
                 st.rerun()
         with col_next:
-            if st.button("Vai all'Approfondimento AI →", type="primary", use_container_width=True):
+            if st.button(
+                "Vai all'Approfondimento AI →", type="primary", use_container_width=True
+            ):
                 go_to(3)
         return
 
@@ -630,68 +638,65 @@ def render_tobe():
     st.markdown(
         f'<div class="hint-box">💡 <em>Per ogni step chiediti: l\'AI <strong>sostituisce</strong> '
         f'(task ripetitivi) o <strong>augmenta</strong> (analisi, decisioni)? '
-        f'Usa il 🎤 per dettare.</em></div>',
+        f'Usa 🎤 per dettare.</em></div>',
         unsafe_allow_html=True,
     )
     st.markdown(f"#### ➕ Step {step_num}")
 
-    prefix = f"tobe_{step_num}"
+    p = f"tobe_{step_num}"
     attivita = voice_text_area(
-        "Come diventa questa attività con l'AI? *", f"{prefix}_att",
-        placeholder="Es: Il sistema AI pre-compila la checklist documenti e invia notifiche automatiche",
+        "Come diventa questa attività con l'AI? *", f"{p}_att",
+        placeholder="Es: Il sistema AI pre-compila la checklist e invia notifiche automatiche",
         height=90,
     )
     chi = voice_text_input(
-        "Chi la svolge? *", f"{prefix}_chi",
+        "Chi la svolge? *", f"{p}_chi",
         placeholder="Es: AI + Ufficio Acquisti (verifica finale)"
     )
     col1, col2 = st.columns(2)
     with col1:
         strumenti = voice_text_input(
-            "Strumenti / Tecnologie AI", f"{prefix}_str",
-            placeholder="Es: Copilot, RPA, LLM personalizzato"
+            "Strumenti / Tecnologie AI", f"{p}_str",
+            placeholder="Es: Copilot, RPA, LLM"
         )
     with col2:
         tempo_str = voice_text_input(
-            "Tempo previsto (minuti)", f"{prefix}_tempo",
-            placeholder="Es: 10"
+            "Tempo previsto (minuti)", f"{p}_tempo", placeholder="Es: 10"
         )
     benefici = voice_text_area(
-        "Benefici attesi", f"{prefix}_ben",
+        "Benefici attesi", f"{p}_ben",
         placeholder="Es: -80% tempo raccolta, meno errori, notifiche automatiche",
         height=85,
     )
     rischi = voice_text_input(
-        "Rischi / ostacoli", f"{prefix}_risk",
-        placeholder="Es: Integrazione con SAP, resistenza al cambiamento"
+        "Rischi / ostacoli", f"{p}_risk",
+        placeholder="Es: Integrazione SAP, resistenza al cambiamento"
     )
 
-    def _get_tempo(s):
-        try:
-            return int(s.strip())
-        except Exception:
-            return None
-
     st.markdown("")
-    col_add, col_done = st.columns([1, 1])
+    col_add, col_done = st.columns(2)
 
     with col_add:
-        if st.button(f"+ Aggiungi Step {step_num}", use_container_width=True, type="primary"):
+        if st.button(
+            f"+ Aggiungi Step {step_num}", use_container_width=True, type="primary"
+        ):
             if not attivita.strip() or not chi.strip():
                 st.error("Attività e chi la svolge sono obbligatori.")
             else:
-                st.session_state.tobe_steps.append({
-                    "step": step_num,
-                    "attivita": attivita.strip(),
-                    "chi": chi.strip(),
-                    "strumenti": strumenti.strip(),
-                    "tempo": _get_tempo(tempo_str),
-                    "benefici": benefici.strip(),
-                    "rischi": rischi.strip(),
-                })
-                for suffix in ["att", "chi", "str", "tempo", "ben", "risk"]:
-                    for pk in [f"input_tobe_{step_num}_{suffix}",
-                                f"__show_mic_tobe_{step_num}_{suffix}"]:
+                st.session_state.tobe_steps.append(
+                    {
+                        "step": step_num,
+                        "attivita": attivita.strip(),
+                        "chi": chi.strip(),
+                        "strumenti": strumenti.strip(),
+                        "tempo": _get_tempo(tempo_str),
+                        "benefici": benefici.strip(),
+                        "rischi": rischi.strip(),
+                    }
+                )
+                for sfx in ["att", "chi", "str", "tempo", "ben", "risk"]:
+                    for pk in [f"input_tobe_{step_num}_{sfx}",
+                                f"__show_mic_tobe_{step_num}_{sfx}"]:
                         st.session_state.pop(pk, None)
                 st.rerun()
 
@@ -705,13 +710,13 @@ def render_tobe():
 
     if n > 0:
         st.markdown("")
-        if st.button("🗑️ Rimuovi ultimo step", use_container_width=True):
+        if st.button("🗑️ Rimuovi ultimo step"):
             st.session_state.tobe_steps.pop()
             st.rerun()
 
     col_back, _ = st.columns([1, 3])
     with col_back:
-        if st.button("← Indietro (AS-IS)", use_container_width=True):
+        if st.button("← Indietro (AS-IS)"):
             go_to(1)
 
 
@@ -728,17 +733,19 @@ def render_chat():
     st.markdown("## 💬 Approfondimento con l'agente AI")
     st.markdown(
         "L'agente ha analizzato le tue mappe e ti farà alcune domande "
-        "per arricchire l'analisi finale. Rispondi liberamente — anche con il microfono."
+        "per arricchire l'analisi finale. Rispondi liberamente — anche con il microfono 🎤."
     )
 
     api_key = st.session_state.api_key
     if not api_key:
-        st.warning("⚠️ Inserisci la API Key in **Impostazioni** nella sidebar per attivare l'agente.")
-        if st.button("← Torna alla TO-BE", use_container_width=True):
+        st.warning(
+            "⚠️ Nessuna API Key impostata. "
+            "Inseriscila nella schermata di benvenuto o tramite variabile d'ambiente."
+        )
+        if st.button("← Torna alla TO-BE"):
             go_to(2)
         return
 
-    # Initialize with AI's first message
     if not st.session_state.chat_initialized:
         with st.spinner("L'agente sta analizzando le tue mappe…"):
             try:
@@ -757,70 +764,51 @@ def render_chat():
                 st.error(f"Errore: {e}")
                 return
 
-    # Render conversation history
     for msg in st.session_state.chat_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Check if conversation is over (AI closed it)
-    last = st.session_state.chat_messages[-1] if st.session_state.chat_messages else {}
     n_user = sum(1 for m in st.session_state.chat_messages if m["role"] == "user")
     show_proceed = n_user >= 3
 
     # Voice input for chat
-    st.markdown("")
-    col_voice, _ = st.columns([1, 3])
-    with col_voice:
+    col_mic, _ = st.columns([1, 3])
+    with col_mic:
         if st.button("🎤 Rispondi con il microfono", use_container_width=True):
-            st.session_state["__show_mic_chat"] = True
+            st.session_state["__show_mic_chat"] = not st.session_state.get(
+                "__show_mic_chat", False
+            )
+            st.rerun()
 
     if st.session_state.get("__show_mic_chat"):
-        audio = st.audio_input("🎙️ Parla ora, poi Trascrivi", key="audio_chat")
-        col_ok, col_x = st.columns([2, 1])
-        with col_x:
-            if st.button("✕ Annulla", key="mic_cancel_chat"):
-                st.session_state["__show_mic_chat"] = False
-                st.rerun()
-        if audio:
-            with col_ok:
-                if st.button("✓ Trascrivi e invia", key="mic_ok_chat", type="primary"):
-                    with st.spinner("Trascrizione…"):
-                        try:
-                            from utils.voice import transcribe_audio
-                            text = transcribe_audio(audio, api_key)
-                            st.session_state["__chat_voice_text"] = text
-                            st.session_state["__show_mic_chat"] = False
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Errore trascrizione: {e}")
+        transcript = _voice_component(key="voice_chat", default=None)
+        if transcript:
+            st.session_state["__chat_voice_text"] = transcript
+            st.session_state["__show_mic_chat"] = False
+            st.rerun()
 
-    # Handle voice-transcribed text as a pending user message
     pending_voice = st.session_state.pop("__chat_voice_text", None)
     if pending_voice:
         _send_chat_message(pending_voice, api_key)
         st.rerun()
 
-    # Text chat input
     user_input = st.chat_input("Scrivi la tua risposta…")
     if user_input:
         _send_chat_message(user_input, api_key)
         st.rerun()
 
-    # Proceed button
     if show_proceed:
         st.markdown("---")
         col_btn, _ = st.columns([2, 1])
         with col_btn:
             if st.button(
-                "Procedi all'Analisi Finale →",
-                type="primary",
-                use_container_width=True,
+                "Procedi all'Analisi Finale →", type="primary", use_container_width=True
             ):
                 go_to(4)
 
     col_back, _ = st.columns([1, 3])
     with col_back:
-        if st.button("← Torna alla TO-BE", use_container_width=True):
+        if st.button("← Torna alla TO-BE"):
             go_to(2)
 
 
@@ -874,17 +862,16 @@ L'AI produrrà un'analisi completa basata su tutto ciò che hai inserito:
         """
     )
 
-    # Quick summary
     n_asis = len(st.session_state.asis_steps)
     n_tobe = len(st.session_state.tobe_steps)
     n_chat = sum(1 for m in st.session_state.chat_messages if m["role"] == "user")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Step AS-IS", n_asis)
-    col2.metric("Step TO-BE", n_tobe)
-    col3.metric("Scambi conversazione", n_chat)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Step AS-IS", n_asis)
+    c2.metric("Step TO-BE", n_tobe)
+    c3.metric("Scambi conversazione", n_chat)
 
     if not api_key:
-        st.warning("⚠️ Inserisci la API Key in **Impostazioni** nella sidebar.")
+        st.warning("⚠️ Nessuna API Key. Inseriscila nella schermata di benvenuto.")
 
     st.markdown("")
     col_gen, col_back = st.columns([2, 1])
@@ -918,8 +905,6 @@ def _render_results():
     st.markdown(st.session_state.analysis_result)
 
     st.markdown("---")
-
-    # Generate HTML report for download
     html = generate_html_report(
         answers=st.session_state.answers,
         asis_steps=st.session_state.asis_steps,
@@ -945,7 +930,7 @@ def _render_results():
         if st.button("🏁 Concludi workshop", type="primary", use_container_width=True):
             st.balloons()
             st.success(
-                "Workshop completato! Ottimo lavoro! 🎉\n\n"
+                "Workshop completato! 🎉\n\n"
                 "Scarica il report e aprilo nel browser → **Ctrl+P → Salva come PDF**."
             )
 
