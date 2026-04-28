@@ -2,13 +2,17 @@ import os
 import json
 from datetime import datetime
 
-import pandas as pd
 import streamlit as st
 
 import config
-from utils.ai_analysis import generate_tobe_analysis
+from utils.ai_analysis import (
+    generate_chat_init,
+    generate_chat_response,
+    generate_final_analysis,
+)
+from utils.export import generate_html_report
 
-# ── Page config ──────────────────────────────────────────────────────────────
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title=config.WORKSHOP_TITLE,
     page_icon="🔍",
@@ -23,45 +27,59 @@ st.markdown(
 [data-testid="stSidebar"] {{
     background-color: {config.COLORS['primary_dark']};
 }}
-[data-testid="stSidebar"] * {{
-    color: white !important;
-}}
-[data-testid="stSidebar"] .stTextInput > div > div > input {{
-    background: rgba(255,255,255,0.1);
-    border-color: rgba(255,255,255,0.3);
-    color: white !important;
-}}
+[data-testid="stSidebar"] * {{ color: white !important; }}
 .main-header {{
     background: linear-gradient(135deg, {config.COLORS['primary_dark']} 0%,
                                         {config.COLORS['primary']} 100%);
-    padding: 1.4rem 2rem;
+    padding: 1.3rem 2rem;
     border-radius: 12px;
-    margin-bottom: 1.5rem;
+    margin-bottom: 1.4rem;
     color: white;
 }}
 .phase-banner {{
     background-color: {config.COLORS['primary']};
     color: white !important;
-    padding: 0.7rem 1.4rem;
+    padding: 0.65rem 1.3rem;
     border-radius: 8px;
-    margin-bottom: 1.4rem;
-    font-size: 1.05rem;
+    margin-bottom: 1.2rem;
+    font-size: 1rem;
     font-weight: 600;
 }}
-.info-card {{
+.step-card {{
     background: white;
-    border-radius: 10px;
-    padding: 1.4rem 1.6rem;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-    margin-bottom: 1rem;
+    border-left: 4px solid {config.COLORS['primary']};
+    border-radius: 0 8px 8px 0;
+    padding: 0.9rem 1.2rem;
+    margin-bottom: 0.6rem;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+}}
+.step-card .step-num {{
+    font-weight: 700;
+    color: {config.COLORS['primary']};
+    font-size: 0.9rem;
+}}
+.step-card .step-title {{
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 2px 0;
+}}
+.step-card .step-meta {{
+    font-size: 0.82rem;
+    color: {config.COLORS['text_muted']};
 }}
 .hint-box {{
     background: #e8f4fd;
     border-radius: 6px;
-    padding: 0.65rem 1rem;
-    font-size: 0.88rem;
+    padding: 0.6rem 1rem;
+    font-size: 0.87rem;
     color: {config.COLORS['text_muted']};
-    margin-top: 0.4rem;
+    margin-bottom: 1rem;
+}}
+.info-card {{
+    background: white;
+    border-radius: 10px;
+    padding: 1.3rem 1.5rem;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     margin-bottom: 1rem;
 }}
 h1, h2, h3 {{ color: {config.COLORS['primary_dark']}; }}
@@ -70,38 +88,15 @@ h1, h2, h3 {{ color: {config.COLORS['primary_dark']}; }}
     unsafe_allow_html=True,
 )
 
-# ── Default DataFrames ────────────────────────────────────────────────────────
-def _default_asis() -> pd.DataFrame:
-    return pd.DataFrame({
-        "Step #": pd.array([1, 2, 3], dtype="Int64"),
-        "Attività": ["", "", ""],
-        "Chi la svolge?": ["", "", ""],
-        "Strumenti usati": ["", "", ""],
-        "Tempo (min)": pd.array([0, 0, 0], dtype="Int64"),
-        "Problemi / criticità": ["", "", ""],
-    })
-
-
-def _default_tobe() -> pd.DataFrame:
-    return pd.DataFrame({
-        "Step #": pd.array([1, 2, 3], dtype="Int64"),
-        "Attività futura": ["", "", ""],
-        "Chi la svolge?": ["", "", ""],
-        "Strumenti / Tecnologie": ["", "", ""],
-        "Tempo previsto (min)": pd.array([0, 0, 0], dtype="Int64"),
-        "Benefici attesi": ["", "", ""],
-        "Rischi / ostacoli": ["", "", ""],
-    })
-
-
 # ── Session state ─────────────────────────────────────────────────────────────
 def _init():
     defaults = {
         "current_phase": 0,
         "answers": {},
-        "asis_df": _default_asis(),
-        "tobe_df": _default_tobe(),
-        "tobe_prepopulated": False,
+        "asis_steps": [],
+        "tobe_steps": [],
+        "chat_messages": [],
+        "chat_initialized": False,
         "analysis_result": None,
         "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
     }
@@ -118,6 +113,69 @@ def go_to(phase: int):
     st.rerun()
 
 
+# ── Voice input helper ────────────────────────────────────────────────────────
+def _apply_transcript(field_key: str):
+    tkey = f"__transcript_{field_key}"
+    if tkey in st.session_state:
+        st.session_state[f"input_{field_key}"] = st.session_state.pop(tkey)
+
+
+def voice_text_input(label: str, field_key: str, placeholder: str = "") -> str:
+    _apply_transcript(field_key)
+    col_t, col_m = st.columns([6, 1])
+    with col_t:
+        val = st.text_input(label, key=f"input_{field_key}", placeholder=placeholder)
+    with col_m:
+        st.write("")
+        if st.button("🎤", key=f"micbtn_{field_key}", help="Registra con microfono"):
+            st.session_state[f"__show_mic_{field_key}"] = True
+    _render_mic(field_key)
+    return val
+
+
+def voice_text_area(label: str, field_key: str, placeholder: str = "", height: int = 110) -> str:
+    _apply_transcript(field_key)
+    col_t, col_m = st.columns([6, 1])
+    with col_t:
+        val = st.text_area(
+            label, key=f"input_{field_key}", placeholder=placeholder, height=height
+        )
+    with col_m:
+        st.write("")
+        st.write("")
+        if st.button("🎤", key=f"micbtn_{field_key}", help="Registra con microfono"):
+            st.session_state[f"__show_mic_{field_key}"] = True
+    _render_mic(field_key)
+    return val
+
+
+def _render_mic(field_key: str):
+    if not st.session_state.get(f"__show_mic_{field_key}"):
+        return
+    api_key = st.session_state.api_key
+    audio = st.audio_input("🎙️ Parla ora, poi clicca Stop", key=f"audio_{field_key}")
+    col_ok, col_x = st.columns([2, 1])
+    with col_x:
+        if st.button("✕ Annulla", key=f"mic_cancel_{field_key}"):
+            st.session_state[f"__show_mic_{field_key}"] = False
+            st.rerun()
+    if audio:
+        with col_ok:
+            if st.button("✓ Trascrivi", key=f"mic_ok_{field_key}", type="primary"):
+                if not api_key:
+                    st.warning("Inserisci la API Key nella sidebar per usare il microfono.")
+                else:
+                    with st.spinner("Trascrizione..."):
+                        try:
+                            from utils.voice import transcribe_audio
+                            text = transcribe_audio(audio, api_key)
+                            st.session_state[f"__transcript_{field_key}"] = text
+                            st.session_state[f"__show_mic_{field_key}"] = False
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Errore trascrizione: {e}")
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(
@@ -125,7 +183,7 @@ with st.sidebar:
         <div style="text-align:center; padding:0.8rem 0 1rem 0;
                     border-bottom:1px solid rgba(255,255,255,0.2); margin-bottom:1rem;">
             <div style="font-size:2rem; font-weight:900; letter-spacing:1px;">iFAB</div>
-            <div style="font-size:0.68rem; opacity:0.75; margin-top:0.2rem;
+            <div style="font-size:0.65rem; opacity:0.75; margin-top:0.2rem;
                         text-transform:uppercase; letter-spacing:0.5px;">
                 International Foundation<br>Big Data &amp; AI for Human Development
             </div>
@@ -138,16 +196,16 @@ with st.sidebar:
     st.markdown(f"**{config.WORKSHOP_SUBTITLE}**")
     st.markdown("---")
 
-    cur_phase = st.session_state.current_phase
+    cur = st.session_state.current_phase
     for pid, pcfg in config.PHASES.items():
-        if pid < cur_phase:
+        if pid < cur:
             marker, style = "✅", "opacity:0.75;"
-        elif pid == cur_phase:
+        elif pid == cur:
             marker, style = "▶", "font-weight:700;"
         else:
             marker, style = "○", "opacity:0.45;"
         st.markdown(
-            f"<div style='{style} padding:0.25rem 0; font-size:0.88rem;'>"
+            f"<div style='{style} padding:0.2rem 0; font-size:0.87rem;'>"
             f"{marker} {pcfg['icon']} {pcfg['name']} "
             f"<span style='opacity:0.65'>({pcfg['duration']})</span></div>",
             unsafe_allow_html=True,
@@ -155,85 +213,87 @@ with st.sidebar:
 
     st.markdown("---")
 
-    with st.expander("⚙️ API Key"):
-        key_input = st.text_input(
-            "Anthropic API Key",
+    # API key hidden in expander (not prominent)
+    with st.expander("⚙️ Impostazioni"):
+        key_in = st.text_input(
+            "API Key (Anthropic)",
             value=st.session_state.api_key,
             type="password",
             placeholder="sk-ant-...",
         )
-        if key_input:
-            st.session_state.api_key = key_input
+        if key_in:
+            st.session_state.api_key = key_in
 
     if st.session_state.analysis_result:
         st.markdown("---")
-        a = st.session_state.answers
-        export = {
-            "timestamp": datetime.now().isoformat(),
-            "profilo": {
-                "nome": a.get("q0_nome", ""),
-                "ruolo": a.get("q0_ruolo", ""),
-                "organizzazione": a.get("q0_org", ""),
-                "processo": a.get("q0_processo", ""),
-                "descrizione": a.get("q0_descrizione", ""),
-            },
-            "asis": st.session_state.asis_df.to_dict(orient="records"),
-            "tobe": st.session_state.tobe_df.to_dict(orient="records"),
-            "analisi_tobe": st.session_state.analysis_result,
-        }
-        st.download_button(
-            "📥 Esporta progetto (JSON)",
-            data=json.dumps(export, ensure_ascii=False, indent=2),
-            file_name=f"workshop_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
-            mime="application/json",
-            use_container_width=True,
+        html = generate_html_report(
+            answers=st.session_state.answers,
+            asis_steps=st.session_state.asis_steps,
+            tobe_steps=st.session_state.tobe_steps,
+            analysis_text=st.session_state.analysis_result,
+            conversation=st.session_state.chat_messages,
         )
         st.download_button(
-            "📄 Esporta analisi (MD)",
-            data=st.session_state.analysis_result,
-            file_name=f"analisi_tobe_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-            mime="text/markdown",
+            "📄 Scarica report (PDF via browser)",
+            data=html,
+            file_name=f"workshop_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
+            mime="text/html",
+            use_container_width=True,
+            help="Apri il file nel browser → Ctrl+P → Salva come PDF",
+        )
+        export_json = json.dumps(
+            {
+                "timestamp": datetime.now().isoformat(),
+                "profilo": st.session_state.answers,
+                "asis": st.session_state.asis_steps,
+                "tobe": st.session_state.tobe_steps,
+                "conversazione": st.session_state.chat_messages,
+                "analisi": st.session_state.analysis_result,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        st.download_button(
+            "📥 Esporta dati (JSON)",
+            data=export_json,
+            file_name=f"workshop_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+            mime="application/json",
             use_container_width=True,
         )
 
     st.markdown("---")
     if st.button("🔄 Ricomincia da capo", use_container_width=True):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
         st.rerun()
 
 # ── Header ────────────────────────────────────────────────────────────────────
 nome = st.session_state.answers.get("q0_nome", "")
 processo = st.session_state.answers.get("q0_processo", "")
-if nome and processo:
-    sub = f"{nome} · {processo}"
-elif nome:
-    sub = f"Bentornato/a, {nome}!"
-else:
-    sub = "Workshop interattivo IFAB"
+sub = f"{nome} · {processo}" if nome and processo else ("Bentornato/a!" if nome else "Workshop interattivo IFAB")
 
 st.markdown(
     f"""
     <div class="main-header">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <div>
-                <div style="font-size:0.8rem; opacity:0.8; margin-bottom:0.25rem;">
-                    FONDAZIONE IFAB · {config.WORKSHOP_SUBTITLE}
-                </div>
-                <div style="font-size:1.45rem; font-weight:700; color:white;">
-                    {config.WORKSHOP_TITLE}
-                </div>
-                <div style="font-size:0.88rem; opacity:0.85; margin-top:0.2rem;">{sub}</div>
-            </div>
-            <div style="font-size:2.8rem;">🔍</div>
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div style="font-size:0.78rem; opacity:0.8; margin-bottom:0.2rem;">
+            FONDAZIONE IFAB · {config.WORKSHOP_SUBTITLE}
+          </div>
+          <div style="font-size:1.4rem; font-weight:700; color:white;">
+            {config.WORKSHOP_TITLE}
+          </div>
+          <div style="font-size:0.87rem; opacity:0.85; margin-top:0.18rem;">{sub}</div>
         </div>
+        <div style="font-size:2.6rem;">🔍</div>
+      </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Phase renderers
+# Phase 0 — Welcome
 # ══════════════════════════════════════════════════════════════════════════════
 
 def render_welcome():
@@ -243,52 +303,41 @@ def render_welcome():
         st.markdown("## 👋 Benvenuto/a al workshop finale!")
         st.markdown(
             """
-Questo workshop ti guida nella **mappatura e trasformazione di un processo aziendale**
-con l'intelligenza artificiale, seguendo la metodologia AS-IS → TO-BE.
+Questo workshop di **~2 ore** ti guida nella mappatura e trasformazione
+di un processo aziendale con l'intelligenza artificiale.
 
-**Il percorso in 3 fasi:**
-1. 🔍 **Mappatura AS-IS** — Come funziona oggi il processo? Chi fa cosa, con quali strumenti, in quanto tempo?
-2. 🚀 **Mappatura TO-BE** — Come cambierebbe con l'AI? Quali step beneficiano di sostituzione o augmentation?
-3. 🤖 **Confronto & AI** — Analisi comparativa, scenario narrativo, roadmap e analisi rischi generata dall'AI.
+**Il percorso:**
+1. 🔍 **AS-IS** — Mappa il processo attuale, step per step
+2. 🚀 **TO-BE** — Immagina il processo con l'AI integrata
+3. 💬 **Approfondimento** — Un agente AI ti fa domande mirate per arricchire l'analisi
+4. 🤖 **Analisi Finale** — Scenario narrativo, roadmap e analisi rischi
 
-Alla fine avrai: una **mappa del tuo processo futuro**, un'**analisi dei rischi**
-e una **roadmap concreta** di implementazione.
+Puoi rispondere **scrivendo** o **parlando** (microfono) in ogni campo.
             """
         )
-
         st.markdown("---")
-        st.markdown("### Parliamo di te e del tuo processo")
+        st.markdown("### Parlaci di te e del tuo processo")
 
-        nome_in = st.text_input(
-            "Nome e cognome",
-            value=st.session_state.answers.get("q0_nome", ""),
-            placeholder="Es: Marco Rossi",
+        nome_in = voice_text_input(
+            "Nome e cognome *", "w_nome", "Es: Marco Rossi"
         )
-        ruolo_in = st.text_input(
-            "Ruolo / funzione",
-            value=st.session_state.answers.get("q0_ruolo", ""),
-            placeholder="Es: Responsabile Formazione",
+        ruolo_in = voice_text_input(
+            "Ruolo / funzione", "w_ruolo", "Es: Responsabile Formazione"
         )
-        org_in = st.text_input(
-            "Organizzazione",
-            value=st.session_state.answers.get("q0_org", ""),
-            placeholder="Es: Oil & Steel SpA",
+        org_in = voice_text_input(
+            "Organizzazione", "w_org", "Es: Oil & Steel SpA"
         )
-        processo_in = st.text_input(
-            "Processo da analizzare",
-            value=st.session_state.answers.get("q0_processo", ""),
-            placeholder="Es: Onboarding nuovi fornitori",
-            help="Dai un nome breve e descrittivo al processo che vuoi analizzare",
+        processo_in = voice_text_input(
+            "Processo da analizzare *", "w_processo",
+            "Es: Onboarding nuovi fornitori"
         )
-        descr_in = st.text_area(
-            "Breve descrizione del processo",
-            value=st.session_state.answers.get("q0_descrizione", ""),
+        descr_in = voice_text_area(
+            "Breve descrizione del processo", "w_descr",
             placeholder=(
-                "Es: Il processo include la raccolta documenti, la verifica dei requisiti, "
-                "la registrazione nel sistema e la formazione iniziale. "
-                "Attualmente richiede 2-3 settimane e coinvolge 4 dipartimenti."
+                "Es: Il processo include raccolta documenti, verifica requisiti, "
+                "registrazione nel sistema e formazione iniziale. "
+                "Coinvolge 4 dipartimenti e dura 2-3 settimane."
             ),
-            height=110,
         )
 
         st.markdown("")
@@ -303,37 +352,109 @@ e una **roadmap concreta** di implementazione.
                 })
                 go_to(1)
             else:
-                st.error("Inserisci almeno il nome e il processo da analizzare per continuare.")
+                st.error("Compila almeno nome e processo per continuare.")
 
     with col_side:
         st.markdown(
             f"""
             <div class="info-card">
-                <div style="font-weight:600; margin-bottom:0.8rem; color:{config.COLORS['primary']};">
-                    ⏱️ Struttura del workshop
-                </div>
-                <div style="font-size:0.88rem; line-height:2.2;">
-                    👋 Introduzione · <strong>5'</strong><br>
-                    🔍 Mappatura AS-IS · <strong>15'</strong><br>
-                    🚀 Mappatura TO-BE · <strong>10'</strong><br>
-                    🤖 Confronto &amp; AI · <strong>20'</strong>
-                </div>
+              <div style="font-weight:600; margin-bottom:0.8rem;
+                          color:{config.COLORS['primary']};">⏱️ Struttura del workshop</div>
+              <div style="font-size:0.87rem; line-height:2.1;">
+                👋 Introduzione · <strong>10'</strong><br>
+                🔍 Mappatura AS-IS · <strong>20'</strong><br>
+                🚀 Mappatura TO-BE · <strong>15'</strong><br>
+                💬 Approfondimento AI · <strong>20'</strong><br>
+                🤖 Analisi Finale · <strong>20'</strong>
+              </div>
             </div>
-            <div class="info-card" style="border-left: 4px solid {config.COLORS['accent']};">
-                <div style="font-weight:600; margin-bottom:0.6rem;">💡 Come scegliere il processo</div>
-                <div style="font-size:0.85rem; line-height:1.8;">
-                    Scegli un processo che:<br>
-                    • Si ripete regolarmente<br>
-                    • Coinvolge più persone o step<br>
-                    • Ha inefficienze note<br>
-                    • Produce output standardizzabili<br>
-                    • Non è critico al 100% (ideale per pilota)
-                </div>
+            <div class="info-card"
+                 style="border-left: 4px solid {config.COLORS['accent']};">
+              <div style="font-weight:600; margin-bottom:0.6rem;">
+                💡 Come scegliere il processo
+              </div>
+              <div style="font-size:0.85rem; line-height:1.8;">
+                Scegli un processo che:<br>
+                • Si ripete regolarmente<br>
+                • Coinvolge più persone o step<br>
+                • Ha inefficienze note<br>
+                • Produce output standardizzabili
+              </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Shared: step form + step cards
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _step_card(s: dict, is_tobe: bool = False):
+    attivita = s.get("attivita", "—")
+    chi = s.get("chi", "—")
+    strumenti = s.get("strumenti", "")
+    tempo = s.get("tempo", "")
+    extra = s.get("benefici", "") if is_tobe else s.get("problemi", "")
+    extra_label = "Benefici" if is_tobe else "Problemi"
+    rischi = s.get("rischi", "") if is_tobe else ""
+
+    meta_parts = [f"👤 {chi}"]
+    if strumenti:
+        meta_parts.append(f"🛠️ {strumenti}")
+    if tempo:
+        meta_parts.append(f"⏱️ {tempo} min")
+    if extra:
+        meta_parts.append(f"{'✅' if is_tobe else '⚠️'} {extra_label}: {extra}")
+    if rischi:
+        meta_parts.append(f"🔴 Rischi: {rischi}")
+
+    st.markdown(
+        f"""<div class="step-card">
+          <div class="step-num">Step {s.get('step', '?')}</div>
+          <div class="step-title">{attivita}</div>
+          <div class="step-meta">{' &nbsp;|&nbsp; '.join(meta_parts)}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def _steps_table(steps: list, is_tobe: bool):
+    import pandas as pd
+    if not steps:
+        st.info("Nessuno step inserito.")
+        return
+    if is_tobe:
+        rows = [
+            {
+                "Step #": s.get("step"),
+                "Attività futura": s.get("attivita"),
+                "Chi la svolge": s.get("chi"),
+                "Strumenti / AI": s.get("strumenti"),
+                "Tempo prev. (min)": s.get("tempo"),
+                "Benefici attesi": s.get("benefici"),
+                "Rischi / ostacoli": s.get("rischi"),
+            }
+            for s in steps
+        ]
+    else:
+        rows = [
+            {
+                "Step #": s.get("step"),
+                "Attività": s.get("attivita"),
+                "Chi la svolge": s.get("chi"),
+                "Strumenti usati": s.get("strumenti"),
+                "Tempo (min)": s.get("tempo"),
+                "Problemi / criticità": s.get("problemi"),
+            }
+            for s in steps
+        ]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 1 — AS-IS
+# ══════════════════════════════════════════════════════════════════════════════
 
 def render_asis():
     pcfg = config.PHASES[1]
@@ -341,283 +462,479 @@ def render_asis():
         f'<div class="phase-banner">{pcfg["icon"]} Fase 1 — {pcfg["name"]} · {pcfg["duration"]}</div>',
         unsafe_allow_html=True,
     )
-
     processo = st.session_state.answers.get("q0_processo", "il processo")
     st.markdown(f"## 🔍 Come funziona oggi **{processo}**?")
-    st.markdown(
-        "Mappa il processo **AS-IS**: inserisci tutti gli step, chi li svolge, "
-        "gli strumenti usati, il tempo e i problemi principali. "
-        "Usa il pulsante **+** in basso per aggiungere righe."
-    )
 
+    steps = st.session_state.asis_steps
+    n = len(steps)
+
+    # ── Completed steps ───────────────────────────────────────────────────────
+    if steps:
+        st.markdown(f"**{n} step inserit{'o' if n == 1 else 'i'}:**")
+        for s in steps:
+            _step_card(s, is_tobe=False)
+        st.markdown("")
+
+    # ── Show summary table at end ─────────────────────────────────────────────
+    if st.session_state.get("asis_done"):
+        st.success(f"✅ Mappatura AS-IS completata — {n} step")
+        _steps_table(steps, is_tobe=False)
+        total = sum(int(s.get("tempo") or 0) for s in steps)
+        if total:
+            st.markdown(f"**⏱️ Tempo totale AS-IS: {total} minuti**")
+        st.markdown("")
+        col_back, col_next = st.columns([1, 2])
+        with col_back:
+            if st.button("← Modifica step", use_container_width=True):
+                st.session_state.asis_done = False
+                st.rerun()
+        with col_next:
+            if st.button("Vai alla Mappatura TO-BE →", type="primary", use_container_width=True):
+                go_to(2)
+        return
+
+    # ── Step form ─────────────────────────────────────────────────────────────
+    step_num = n + 1
     st.markdown(
-        f'<div class="hint-box">💡 <em>Suggerimento: parti dagli step principali '
-        f'(3-8 è un buon numero). Anche stime approssimative del tempo sono utili.</em></div>',
+        f'<div class="hint-box">💡 <em>Descrivi lo step {step_num} del processo. '
+        f'Usa il 🎤 per dettare invece di scrivere.</em></div>',
         unsafe_allow_html=True,
     )
+    st.markdown(f"#### ➕ Step {step_num}")
 
-    edited_asis = st.data_editor(
-        st.session_state.asis_df,
-        num_rows="dynamic",
-        use_container_width=True,
-        column_config={
-            "Step #": st.column_config.NumberColumn("Step #", min_value=1, step=1, width="small"),
-            "Attività": st.column_config.TextColumn("Attività", width="large"),
-            "Chi la svolge?": st.column_config.TextColumn("Chi la svolge?", width="medium"),
-            "Strumenti usati": st.column_config.TextColumn("Strumenti usati", width="medium"),
-            "Tempo (min)": st.column_config.NumberColumn("Tempo (min)", min_value=0, step=5, width="small"),
-            "Problemi / criticità": st.column_config.TextColumn("Problemi / criticità", width="large"),
-        },
-        key="asis_editor",
+    prefix = f"asis_{step_num}"
+    attivita = voice_text_area(
+        "Descrivi questa attività *", f"{prefix}_att",
+        placeholder="Es: Raccolta documenti richiesti al fornitore",
+        height=90,
     )
-    st.session_state.asis_df = edited_asis
-
-    total_time = int(edited_asis["Tempo (min)"].fillna(0).sum())
-    if total_time > 0:
-        st.markdown(
-            f"**⏱️ Tempo totale AS-IS: {total_time} minuti** "
-            f"({total_time // 60}h {total_time % 60}min)"
+    chi = voice_text_input(
+        "Chi la svolge? *", f"{prefix}_chi",
+        placeholder="Es: Ufficio Acquisti"
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        strumenti = voice_text_input(
+            "Strumenti / sistemi usati", f"{prefix}_str",
+            placeholder="Es: Email, SAP, Excel"
         )
+    with col2:
+        tempo_str = voice_text_input(
+            "Tempo richiesto (minuti)", f"{prefix}_tempo",
+            placeholder="Es: 45"
+        )
+    problemi = voice_text_area(
+        "Problemi o inefficienze principali", f"{prefix}_prob",
+        placeholder="Es: Documenti spesso incompleti, molte mail avanti-indietro",
+        height=90,
+    )
+
+    def _get_tempo(s):
+        try:
+            return int(s.strip())
+        except Exception:
+            return None
 
     st.markdown("")
-    col_back, col_next = st.columns([1, 2])
+    col_add, col_done = st.columns([1, 1])
+
+    with col_add:
+        if st.button(f"+ Aggiungi Step {step_num}", use_container_width=True, type="primary"):
+            if not attivita.strip() or not chi.strip():
+                st.error("Attività e chi la svolge sono obbligatori.")
+            else:
+                step_data = {
+                    "step": step_num,
+                    "attivita": attivita.strip(),
+                    "chi": chi.strip(),
+                    "strumenti": strumenti.strip(),
+                    "tempo": _get_tempo(tempo_str),
+                    "problemi": problemi.strip(),
+                }
+                st.session_state.asis_steps.append(step_data)
+                # Clear draft fields
+                for suffix in ["att", "chi", "str", "tempo", "prob"]:
+                    for prefix_key in [f"input_asis_{step_num}_{suffix}",
+                                       f"__show_mic_asis_{step_num}_{suffix}"]:
+                        st.session_state.pop(prefix_key, None)
+                st.rerun()
+
+    with col_done:
+        if n > 0:
+            if st.button("✓ Concludi AS-IS", use_container_width=True):
+                st.session_state.asis_done = True
+                st.rerun()
+        else:
+            st.caption("Aggiungi almeno uno step per concludere.")
+
+    if n > 0:
+        st.markdown("")
+        if st.button("🗑️ Rimuovi ultimo step", use_container_width=True):
+            st.session_state.asis_steps.pop()
+            st.rerun()
+
+    col_back, _ = st.columns([1, 3])
     with col_back:
         if st.button("← Indietro", use_container_width=True):
             go_to(0)
-    with col_next:
-        n_filled = int(
-            (edited_asis["Attività"].fillna("").astype(str).str.strip() != "").sum()
-        )
-        if st.button(
-            "Vai alla Mappatura TO-BE →",
-            type="primary",
-            use_container_width=True,
-            disabled=(n_filled == 0),
-        ):
-            _prepopulate_tobe_from_asis()
-            go_to(2)
-        if n_filled == 0:
-            st.caption("⚠️ Inserisci almeno un'attività per continuare.")
 
 
-def _prepopulate_tobe_from_asis():
-    if st.session_state.tobe_prepopulated:
-        return
-    asis = st.session_state.asis_df
-    mask = asis["Attività"].fillna("").astype(str).str.strip() != ""
-    filled = asis[mask].reset_index(drop=True)
-    if filled.empty:
-        return
-    n = len(filled)
-    st.session_state.tobe_df = pd.DataFrame({
-        "Step #": filled["Step #"].values,
-        "Attività futura": filled["Attività"].values,
-        "Chi la svolge?": filled["Chi la svolge?"].values,
-        "Strumenti / Tecnologie": ["" for _ in range(n)],
-        "Tempo previsto (min)": pd.array([0] * n, dtype="Int64"),
-        "Benefici attesi": ["" for _ in range(n)],
-        "Rischi / ostacoli": ["" for _ in range(n)],
-    })
-    st.session_state.tobe_prepopulated = True
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 2 — TO-BE
+# ══════════════════════════════════════════════════════════════════════════════
 
-
-def render_tobe_mapping():
+def render_tobe():
     pcfg = config.PHASES[2]
     st.markdown(
         f'<div class="phase-banner">{pcfg["icon"]} Fase 2 — {pcfg["name"]} · {pcfg["duration"]}</div>',
         unsafe_allow_html=True,
     )
-
     processo = st.session_state.answers.get("q0_processo", "il processo")
     st.markdown(f"## 🚀 Come cambierà **{processo}** con l'AI?")
-    st.markdown(
-        "Immagina il processo **TO-BE**: per ogni step, descrivi come cambierà l'attività, "
-        "chi la svolgerà, quali tecnologie AI si userebbero e quali benefici si otterranno."
-    )
 
+    steps = st.session_state.tobe_steps
+    n = len(steps)
+
+    # AS-IS reference panel
+    with st.expander("📋 Riferimento AS-IS", expanded=False):
+        _steps_table(st.session_state.asis_steps, is_tobe=False)
+
+    if steps:
+        st.markdown(f"**{n} step inserit{'o' if n == 1 else 'i'}:**")
+        for s in steps:
+            _step_card(s, is_tobe=True)
+        st.markdown("")
+
+    if st.session_state.get("tobe_done"):
+        st.success(f"✅ Mappatura TO-BE completata — {n} step")
+        _steps_table(steps, is_tobe=True)
+        total_asis = sum(int(s.get("tempo") or 0) for s in st.session_state.asis_steps)
+        total_tobe = sum(int(s.get("tempo") or 0) for s in steps)
+        if total_tobe:
+            delta = total_asis - total_tobe
+            pct = int(delta / total_asis * 100) if total_asis else 0
+            suffix = f" · risparmio **{delta} min ({pct}%)**" if delta > 0 else ""
+            st.markdown(f"**⏱️ Tempo totale TO-BE: {total_tobe} minuti{suffix}**")
+        st.markdown("")
+        col_back, col_next = st.columns([1, 2])
+        with col_back:
+            if st.button("← Modifica step", use_container_width=True):
+                st.session_state.tobe_done = False
+                st.rerun()
+        with col_next:
+            if st.button("Vai all'Approfondimento AI →", type="primary", use_container_width=True):
+                go_to(3)
+        return
+
+    step_num = n + 1
     st.markdown(
         f'<div class="hint-box">💡 <em>Per ogni step chiediti: l\'AI <strong>sostituisce</strong> '
-        f'l\'umano (task ripetitivi, standardizzati) oppure lo <strong>augmenta</strong> '
-        f'(analisi, decisioni complesse)? Puoi anche eliminare step che diventano automatici.</em></div>',
+        f'(task ripetitivi) o <strong>augmenta</strong> (analisi, decisioni)? '
+        f'Usa il 🎤 per dettare.</em></div>',
         unsafe_allow_html=True,
     )
+    st.markdown(f"#### ➕ Step {step_num}")
 
-    col_tobe, col_ref = st.columns([3, 1])
-
-    with col_ref:
-        st.markdown("**📋 Riferimento AS-IS**")
-        ref_df = st.session_state.asis_df[
-            st.session_state.asis_df["Attività"].fillna("").astype(str).str.strip() != ""
-        ][["Step #", "Attività", "Tempo (min)"]].copy()
-        st.dataframe(ref_df, use_container_width=True, hide_index=True, height=320)
-        asis_time = int(st.session_state.asis_df["Tempo (min)"].fillna(0).sum())
-        if asis_time > 0:
-            st.caption(f"AS-IS totale: **{asis_time} min**")
-
-    with col_tobe:
-        edited_tobe = st.data_editor(
-            st.session_state.tobe_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "Step #": st.column_config.NumberColumn("Step #", min_value=1, step=1, width="small"),
-                "Attività futura": st.column_config.TextColumn("Attività futura", width="large"),
-                "Chi la svolge?": st.column_config.TextColumn("Chi la svolge?", width="medium"),
-                "Strumenti / Tecnologie": st.column_config.TextColumn("Strumenti AI / Tecnologie", width="medium"),
-                "Tempo previsto (min)": st.column_config.NumberColumn("Tempo prev. (min)", min_value=0, step=5, width="small"),
-                "Benefici attesi": st.column_config.TextColumn("Benefici attesi", width="medium"),
-                "Rischi / ostacoli": st.column_config.TextColumn("Rischi / ostacoli", width="medium"),
-            },
-            key="tobe_editor",
+    prefix = f"tobe_{step_num}"
+    attivita = voice_text_area(
+        "Come diventa questa attività con l'AI? *", f"{prefix}_att",
+        placeholder="Es: Il sistema AI pre-compila la checklist documenti e invia notifiche automatiche",
+        height=90,
+    )
+    chi = voice_text_input(
+        "Chi la svolge? *", f"{prefix}_chi",
+        placeholder="Es: AI + Ufficio Acquisti (verifica finale)"
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        strumenti = voice_text_input(
+            "Strumenti / Tecnologie AI", f"{prefix}_str",
+            placeholder="Es: Copilot, RPA, LLM personalizzato"
         )
-        st.session_state.tobe_df = edited_tobe
+    with col2:
+        tempo_str = voice_text_input(
+            "Tempo previsto (minuti)", f"{prefix}_tempo",
+            placeholder="Es: 10"
+        )
+    benefici = voice_text_area(
+        "Benefici attesi", f"{prefix}_ben",
+        placeholder="Es: -80% tempo raccolta, meno errori, notifiche automatiche",
+        height=85,
+    )
+    rischi = voice_text_input(
+        "Rischi / ostacoli", f"{prefix}_risk",
+        placeholder="Es: Integrazione con SAP, resistenza al cambiamento"
+    )
 
-        tobe_time = int(edited_tobe["Tempo previsto (min)"].fillna(0).sum())
-        if tobe_time > 0:
-            delta = asis_time - tobe_time
-            pct = int(delta / asis_time * 100) if asis_time > 0 else 0
-            suffix = f" · risparmio **{delta} min ({pct}%)**" if delta > 0 else ""
-            st.markdown(f"**⏱️ Tempo totale TO-BE: {tobe_time} minuti**{suffix}")
+    def _get_tempo(s):
+        try:
+            return int(s.strip())
+        except Exception:
+            return None
 
     st.markdown("")
-    col_back, col_next = st.columns([1, 2])
+    col_add, col_done = st.columns([1, 1])
+
+    with col_add:
+        if st.button(f"+ Aggiungi Step {step_num}", use_container_width=True, type="primary"):
+            if not attivita.strip() or not chi.strip():
+                st.error("Attività e chi la svolge sono obbligatori.")
+            else:
+                st.session_state.tobe_steps.append({
+                    "step": step_num,
+                    "attivita": attivita.strip(),
+                    "chi": chi.strip(),
+                    "strumenti": strumenti.strip(),
+                    "tempo": _get_tempo(tempo_str),
+                    "benefici": benefici.strip(),
+                    "rischi": rischi.strip(),
+                })
+                for suffix in ["att", "chi", "str", "tempo", "ben", "risk"]:
+                    for pk in [f"input_tobe_{step_num}_{suffix}",
+                                f"__show_mic_tobe_{step_num}_{suffix}"]:
+                        st.session_state.pop(pk, None)
+                st.rerun()
+
+    with col_done:
+        if n > 0:
+            if st.button("✓ Concludi TO-BE", use_container_width=True):
+                st.session_state.tobe_done = True
+                st.rerun()
+        else:
+            st.caption("Aggiungi almeno uno step per concludere.")
+
+    if n > 0:
+        st.markdown("")
+        if st.button("🗑️ Rimuovi ultimo step", use_container_width=True):
+            st.session_state.tobe_steps.pop()
+            st.rerun()
+
+    col_back, _ = st.columns([1, 3])
     with col_back:
         if st.button("← Indietro (AS-IS)", use_container_width=True):
             go_to(1)
-    with col_next:
-        n_filled = int(
-            (edited_tobe["Attività futura"].fillna("").astype(str).str.strip() != "").sum()
-        )
-        if st.button(
-            "Vai al Confronto & Analisi AI →",
-            type="primary",
-            use_container_width=True,
-            disabled=(n_filled == 0),
-        ):
-            go_to(3)
-        if n_filled == 0:
-            st.caption("⚠️ Inserisci almeno un'attività TO-BE per continuare.")
 
 
-def render_confronto():
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 3 — Conversational AI agent
+# ══════════════════════════════════════════════════════════════════════════════
+
+def render_chat():
     pcfg = config.PHASES[3]
     st.markdown(
         f'<div class="phase-banner">{pcfg["icon"]} Fase 3 — {pcfg["name"]} · {pcfg["duration"]}</div>',
         unsafe_allow_html=True,
     )
-
-    asis_df = st.session_state.asis_df
-    tobe_df = st.session_state.tobe_df
-    processo = st.session_state.answers.get("q0_processo", "il processo")
-
-    st.markdown(f"## 🤖 Confronto AS-IS → TO-BE: **{processo}**")
-
-    # ── Quick stats ──────────────────────────────────────────────────────────
-    asis_time = int(asis_df["Tempo (min)"].fillna(0).sum())
-    tobe_time = int(tobe_df["Tempo previsto (min)"].fillna(0).sum())
-    delta = asis_time - tobe_time
-    pct = int(delta / asis_time * 100) if asis_time > 0 else 0
-    n_asis = int((asis_df["Attività"].fillna("").astype(str).str.strip() != "").sum())
-    n_tobe = int((tobe_df["Attività futura"].fillna("").astype(str).str.strip() != "").sum())
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("⏱️ Tempo AS-IS", f"{asis_time} min")
-    with c2:
-        st.metric(
-            "🚀 Tempo TO-BE",
-            f"{tobe_time} min",
-            delta=f"-{delta} min ({pct}%)" if delta > 0 else None,
-            delta_color="inverse",
-        )
-    with c3:
-        st.metric("📋 Step AS-IS", n_asis)
-    with c4:
-        st.metric("✨ Step TO-BE", n_tobe)
-
-    st.markdown("---")
-
-    # ── Tables comparison ────────────────────────────────────────────────────
-    tab_asis, tab_tobe = st.tabs(["📋 Mappa AS-IS", "🚀 Mappa TO-BE"])
-    with tab_asis:
-        st.dataframe(
-            asis_df[asis_df["Attività"].fillna("").astype(str).str.strip() != ""],
-            use_container_width=True,
-            hide_index=True,
-        )
-    with tab_tobe:
-        st.dataframe(
-            tobe_df[tobe_df["Attività futura"].fillna("").astype(str).str.strip() != ""],
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    st.markdown("---")
-
-    # ── AI analysis ──────────────────────────────────────────────────────────
-    if not st.session_state.analysis_result:
-        _render_generate_analysis()
-    else:
-        _render_analysis_results()
-
-
-def _render_generate_analysis():
-    st.markdown("## 🤖 Genera l'analisi AI")
+    st.markdown("## 💬 Approfondimento con l'agente AI")
     st.markdown(
-        """
-Sulla base delle due mappe, l'AI genererà:
-
-- 📊 **Sostituzione vs Augmentation** — classificazione step per step
-- 🌅 **Scenario narrativo** — come cambierà la giornata lavorativa
-- ⚠️ **Analisi dei rischi** — tecnici, organizzativi, etici, con mitigazioni
-- 📅 **Roadmap** — piano pratico in 3 fasi con KPI
-- 🤝 **Domanda aperta** — per portare la discussione al tuo team
-        """
+        "L'agente ha analizzato le tue mappe e ti farà alcune domande "
+        "per arricchire l'analisi finale. Rispondi liberamente — anche con il microfono."
     )
 
-    if not st.session_state.api_key:
-        st.warning(
-            "⚠️ Inserisci la tua **Anthropic API Key** nel pannello ⚙️ nella sidebar "
-            "per generare l'analisi."
-        )
+    api_key = st.session_state.api_key
+    if not api_key:
+        st.warning("⚠️ Inserisci la API Key in **Impostazioni** nella sidebar per attivare l'agente.")
+        if st.button("← Torna alla TO-BE", use_container_width=True):
+            go_to(2)
+        return
 
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        if st.button(
-            "🤖 Genera Analisi AI",
-            type="primary",
-            use_container_width=True,
-            disabled=not st.session_state.api_key,
-        ):
-            with st.spinner("L'AI sta analizzando AS-IS e TO-BE… ⏳"):
-                try:
-                    result = generate_tobe_analysis(
-                        answers=st.session_state.answers,
-                        asis_df=st.session_state.asis_df,
-                        tobe_df=st.session_state.tobe_df,
-                        api_key=st.session_state.api_key,
-                    )
-                    st.session_state.analysis_result = result
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Errore nella generazione: {exc}")
-    with col2:
-        if st.button("← Modifica TO-BE", use_container_width=True):
+    # Initialize with AI's first message
+    if not st.session_state.chat_initialized:
+        with st.spinner("L'agente sta analizzando le tue mappe…"):
+            try:
+                first_msg = generate_chat_init(
+                    answers=st.session_state.answers,
+                    asis_steps=st.session_state.asis_steps,
+                    tobe_steps=st.session_state.tobe_steps,
+                    api_key=api_key,
+                )
+                st.session_state.chat_messages = [
+                    {"role": "assistant", "content": first_msg}
+                ]
+                st.session_state.chat_initialized = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Errore: {e}")
+                return
+
+    # Render conversation history
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Check if conversation is over (AI closed it)
+    last = st.session_state.chat_messages[-1] if st.session_state.chat_messages else {}
+    n_user = sum(1 for m in st.session_state.chat_messages if m["role"] == "user")
+    show_proceed = n_user >= 3
+
+    # Voice input for chat
+    st.markdown("")
+    col_voice, _ = st.columns([1, 3])
+    with col_voice:
+        if st.button("🎤 Rispondi con il microfono", use_container_width=True):
+            st.session_state["__show_mic_chat"] = True
+
+    if st.session_state.get("__show_mic_chat"):
+        audio = st.audio_input("🎙️ Parla ora, poi Trascrivi", key="audio_chat")
+        col_ok, col_x = st.columns([2, 1])
+        with col_x:
+            if st.button("✕ Annulla", key="mic_cancel_chat"):
+                st.session_state["__show_mic_chat"] = False
+                st.rerun()
+        if audio:
+            with col_ok:
+                if st.button("✓ Trascrivi e invia", key="mic_ok_chat", type="primary"):
+                    with st.spinner("Trascrizione…"):
+                        try:
+                            from utils.voice import transcribe_audio
+                            text = transcribe_audio(audio, api_key)
+                            st.session_state["__chat_voice_text"] = text
+                            st.session_state["__show_mic_chat"] = False
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Errore trascrizione: {e}")
+
+    # Handle voice-transcribed text as a pending user message
+    pending_voice = st.session_state.pop("__chat_voice_text", None)
+    if pending_voice:
+        _send_chat_message(pending_voice, api_key)
+        st.rerun()
+
+    # Text chat input
+    user_input = st.chat_input("Scrivi la tua risposta…")
+    if user_input:
+        _send_chat_message(user_input, api_key)
+        st.rerun()
+
+    # Proceed button
+    if show_proceed:
+        st.markdown("---")
+        col_btn, _ = st.columns([2, 1])
+        with col_btn:
+            if st.button(
+                "Procedi all'Analisi Finale →",
+                type="primary",
+                use_container_width=True,
+            ):
+                go_to(4)
+
+    col_back, _ = st.columns([1, 3])
+    with col_back:
+        if st.button("← Torna alla TO-BE", use_container_width=True):
             go_to(2)
 
 
-def _render_analysis_results():
-    st.markdown("## 🎯 Analisi AI del tuo scenario TO-BE")
+def _send_chat_message(text: str, api_key: str):
+    st.session_state.chat_messages.append({"role": "user", "content": text})
+    with st.spinner("L'agente risponde…"):
+        try:
+            reply = generate_chat_response(
+                answers=st.session_state.answers,
+                asis_steps=st.session_state.asis_steps,
+                tobe_steps=st.session_state.tobe_steps,
+                chat_history=st.session_state.chat_messages,
+                api_key=api_key,
+            )
+            st.session_state.chat_messages.append({"role": "assistant", "content": reply})
+        except Exception as e:
+            st.session_state.chat_messages.append(
+                {"role": "assistant", "content": f"⚠️ Errore: {e}"}
+            )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 4 — Final analysis
+# ══════════════════════════════════════════════════════════════════════════════
+
+def render_final():
+    pcfg = config.PHASES[4]
+    st.markdown(
+        f'<div class="phase-banner">{pcfg["icon"]} Fase 4 — {pcfg["name"]} · {pcfg["duration"]}</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not st.session_state.analysis_result:
+        _render_generate()
+    else:
+        _render_results()
+
+
+def _render_generate():
+    api_key = st.session_state.api_key
+    st.markdown("## 🤖 Genera l'Analisi Finale")
+    st.markdown(
+        """
+L'AI produrrà un'analisi completa basata su tutto ciò che hai inserito:
+
+- 📊 **Sostituzione vs Augmentation** — per ogni step
+- 🌅 **Scenario narrativo** — come cambierà la tua giornata
+- ⚠️ **Analisi dei rischi** — con strategie di mitigazione
+- 📅 **Roadmap** — piano concreto in 3 fasi
+- 🤝 **Domanda aperta** — per il tuo team
+        """
+    )
+
+    # Quick summary
+    n_asis = len(st.session_state.asis_steps)
+    n_tobe = len(st.session_state.tobe_steps)
+    n_chat = sum(1 for m in st.session_state.chat_messages if m["role"] == "user")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Step AS-IS", n_asis)
+    col2.metric("Step TO-BE", n_tobe)
+    col3.metric("Scambi conversazione", n_chat)
+
+    if not api_key:
+        st.warning("⚠️ Inserisci la API Key in **Impostazioni** nella sidebar.")
+
+    st.markdown("")
+    col_gen, col_back = st.columns([2, 1])
+    with col_gen:
+        if st.button(
+            "🤖 Genera Analisi Finale",
+            type="primary",
+            use_container_width=True,
+            disabled=not api_key,
+        ):
+            with st.spinner("L'AI sta elaborando l'analisi completa… ⏳"):
+                try:
+                    result = generate_final_analysis(
+                        answers=st.session_state.answers,
+                        asis_steps=st.session_state.asis_steps,
+                        tobe_steps=st.session_state.tobe_steps,
+                        chat_history=st.session_state.chat_messages,
+                        api_key=api_key,
+                    )
+                    st.session_state.analysis_result = result
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Errore: {e}")
+    with col_back:
+        if st.button("← Torna alla conversazione", use_container_width=True):
+            go_to(3)
+
+
+def _render_results():
+    st.markdown("## 🎯 Analisi AI — Scenario TO-BE")
     st.markdown(st.session_state.analysis_result)
 
     st.markdown("---")
+
+    # Generate HTML report for download
+    html = generate_html_report(
+        answers=st.session_state.answers,
+        asis_steps=st.session_state.asis_steps,
+        tobe_steps=st.session_state.tobe_steps,
+        analysis_text=st.session_state.analysis_result,
+        conversation=st.session_state.chat_messages,
+    )
+
     col1, col2, col3 = st.columns(3)
     with col1:
         st.download_button(
-            "📄 Scarica analisi (MD)",
-            data=st.session_state.analysis_result,
-            file_name=f"analisi_tobe_{datetime.now().strftime('%Y%m%d')}.md",
-            mime="text/markdown",
+            "📄 Scarica Report (apri → Ctrl+P → PDF)",
+            data=html,
+            file_name=f"workshop_{datetime.now().strftime('%Y%m%d')}.html",
+            mime="text/html",
             use_container_width=True,
         )
     with col2:
@@ -628,14 +945,13 @@ def _render_analysis_results():
         if st.button("🏁 Concludi workshop", type="primary", use_container_width=True):
             st.balloons()
             st.success(
-                "Workshop completato! Ottimo lavoro! 🎉  \n"
-                "Hai la tua mappa TO-BE, l'analisi dei rischi e la roadmap: "
-                "il prossimo passo è presentare i risultati al tuo team."
+                "Workshop completato! Ottimo lavoro! 🎉\n\n"
+                "Scarica il report e aprilo nel browser → **Ctrl+P → Salva come PDF**."
             )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Main router
+# Router
 # ══════════════════════════════════════════════════════════════════════════════
 phase = st.session_state.current_phase
 
@@ -644,6 +960,8 @@ if phase == 0:
 elif phase == 1:
     render_asis()
 elif phase == 2:
-    render_tobe_mapping()
+    render_tobe()
 elif phase == 3:
-    render_confronto()
+    render_chat()
+elif phase == 4:
+    render_final()

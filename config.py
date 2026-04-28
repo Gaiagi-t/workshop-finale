@@ -16,11 +16,12 @@ COLORS = {
 }
 
 PHASES = {
-    0: {"name": "Introduzione",    "icon": "👋", "duration": "5'"},
-    1: {"name": "Mappatura AS-IS", "icon": "🔍", "duration": "15'"},
-    2: {"name": "Mappatura TO-BE", "icon": "🚀", "duration": "10'"},
-    3: {"name": "Confronto & AI",  "icon": "🤖", "duration": "20'"},
+    0: {"name": "Introduzione",      "icon": "👋", "duration": "10'"},
+    1: {"name": "Mappatura AS-IS",   "icon": "🔍", "duration": "20'"},
+    2: {"name": "Mappatura TO-BE",   "icon": "🚀", "duration": "15'"},
+    3: {"name": "Approfondimento",   "icon": "💬", "duration": "20'"},
+    4: {"name": "Analisi Finale",    "icon": "🤖", "duration": "20'"},
 }
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
-MAX_TOKENS = 6000
+MAX_TOKENS = 8000
