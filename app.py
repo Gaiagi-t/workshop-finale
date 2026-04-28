@@ -9,6 +9,7 @@ from utils.ai_analysis import (
     generate_chat_init,
     generate_chat_response,
     generate_final_analysis,
+    generate_tobe_assistant_response,
 )
 from utils.export import generate_html_report
 from utils.voice import transcribe_audio
@@ -97,6 +98,7 @@ def _init():
         "analysis_result": None,
         "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
         "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),
+        "tobe_assistant_messages": [],
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -476,10 +478,51 @@ def _steps_table(steps: list, is_tobe: bool):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get_tempo(s: str):
-    try:
-        return int(s.strip())
-    except Exception:
+    return s.strip() if s and s.strip() else None
+
+
+def _parse_minutes(val) -> int | None:
+    """Try to parse a time value into minutes. Returns None if not parseable."""
+    if val is None:
         return None
+    s = str(val).lower().strip()
+    import re
+    # "45", "45 min", "45min", "45 minuti"
+    m = re.match(r"^(\d+(?:[.,]\d+)?)\s*(?:min(?:uti?)?)?$", s)
+    if m:
+        return int(float(m.group(1).replace(",", ".")))
+    # "2 ore", "2h"
+    m = re.match(r"^(\d+(?:[.,]\d+)?)\s*(?:h|or[ae])$", s)
+    if m:
+        return int(float(m.group(1).replace(",", ".")) * 60)
+    # "2 giorni" → 8h/day
+    m = re.match(r"^(\d+(?:[.,]\d+)?)\s*(?:giorn[oi])$", s)
+    if m:
+        return int(float(m.group(1).replace(",", ".")) * 480)
+    # "1 settimana" → 5 days
+    m = re.match(r"^(\d+(?:[.,]\d+)?)\s*(?:settiman[ae])$", s)
+    if m:
+        return int(float(m.group(1).replace(",", ".")) * 2400)
+    return None
+
+
+def _format_total(steps: list, time_key: str) -> str:
+    """Return a human-readable total time string from a list of steps."""
+    vals = [s.get(time_key) for s in steps if s.get(time_key)]
+    if not vals:
+        return ""
+    minutes_list = [_parse_minutes(v) for v in vals]
+    if all(m is not None for m in minutes_list):
+        total = sum(minutes_list)
+        if total >= 2400:
+            return f"{total // 2400} sett. {(total % 2400) // 480}gg"
+        if total >= 480:
+            return f"{total // 480}gg {(total % 480) // 60}h"
+        if total >= 60:
+            return f"{total // 60}h {total % 60}min"
+        return f"{total} min"
+    # Mixed units — show raw values
+    return " + ".join(str(v) for v in vals if v)
 
 
 def render_asis():
@@ -503,9 +546,9 @@ def render_asis():
     if st.session_state.get("asis_done"):
         st.success(f"✅ Mappatura AS-IS completata — {n} step")
         _steps_table(steps, is_tobe=False)
-        total = sum(int(s.get("tempo") or 0) for s in steps)
-        if total:
-            st.markdown(f"**⏱️ Tempo totale AS-IS: {total} minuti**")
+        total_fmt = _format_total(steps, "tempo")
+        if total_fmt:
+            st.markdown(f"**⏱️ Tempo totale AS-IS: {total_fmt}**")
         st.markdown("")
         col_back, col_next = st.columns([1, 2])
         with col_back:
@@ -542,7 +585,8 @@ def render_asis():
         )
     with col2:
         tempo_str = voice_text_input(
-            "Tempo richiesto (minuti)", f"{p}_tempo", placeholder="Es: 45"
+            "Tempo richiesto", f"{p}_tempo",
+            placeholder="Es: 45 min · 2 ore · 3 giorni · 1 settimana"
         )
     problemi = voice_text_area(
         "Problemi o inefficienze principali", f"{p}_prob",
@@ -631,12 +675,11 @@ def render_tobe():
     if st.session_state.get("tobe_done"):
         st.success(f"✅ Mappatura TO-BE completata — {n} step")
         _steps_table(steps, is_tobe=True)
-        total_tobe = sum(int(s.get("tempo") or 0) for s in steps)
-        if total_tobe:
-            delta = total_asis - total_tobe
-            pct = int(delta / total_asis * 100) if total_asis else 0
-            suffix = f" · risparmio **{delta} min ({pct}%)**" if delta > 0 else ""
-            st.markdown(f"**⏱️ Tempo totale TO-BE: {total_tobe} minuti{suffix}**")
+        total_fmt = _format_total(steps, "tempo")
+        asis_fmt = _format_total(st.session_state.asis_steps, "tempo")
+        if total_fmt:
+            suffix = f" &nbsp;|&nbsp; AS-IS: {asis_fmt}" if asis_fmt else ""
+            st.markdown(f"**⏱️ Tempo totale TO-BE: {total_fmt}**{suffix}")
         st.markdown("")
         col_back, col_next = st.columns([1, 2])
         with col_back:
@@ -651,89 +694,211 @@ def render_tobe():
         return
 
     step_num = n + 1
+
+    # ── Two-column layout: form + AI assistant ─────────────────────────────────
+    col_form, col_ai = st.columns([3, 2], gap="large")
+
+    with col_form:
+        st.markdown(
+            f'<div class="hint-box">💡 <em>Per ogni step chiediti: l\'AI '
+            f'<strong>sostituisce</strong> (task ripetitivi) o '
+            f'<strong>augmenta</strong> (analisi, decisioni)? '
+            f'Non sai quale tool? Chiedilo all\'assistente AI →</em></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(f"#### ➕ Step {step_num}")
+
+        p = f"tobe_{step_num}"
+        attivita = voice_text_area(
+            "Come diventa questa attività con l'AI? *", f"{p}_att",
+            placeholder="Es: Il sistema AI pre-compila la checklist e invia notifiche automatiche",
+            height=90,
+        )
+        chi = voice_text_input(
+            "Chi la svolge? *", f"{p}_chi",
+            placeholder="Es: AI + Ufficio Acquisti (verifica finale)"
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            strumenti = voice_text_input(
+                "Strumenti / Tecnologie AI", f"{p}_str",
+                placeholder="Es: Copilot, Power Automate, Claude"
+            )
+        with col2:
+            tempo_str = voice_text_input(
+                "Tempo previsto", f"{p}_tempo",
+                placeholder="Es: 10 min · 1 ora · 2 giorni"
+            )
+        benefici = voice_text_area(
+            "Benefici attesi", f"{p}_ben",
+            placeholder="Es: -80% tempo raccolta, meno errori, notifiche automatiche",
+            height=85,
+        )
+        rischi = voice_text_input(
+            "Rischi / ostacoli", f"{p}_risk",
+            placeholder="Es: Integrazione SAP, resistenza al cambiamento"
+        )
+
+        st.markdown("")
+        col_add, col_done = st.columns(2)
+
+        with col_add:
+            if st.button(
+                f"+ Aggiungi Step {step_num}", use_container_width=True, type="primary"
+            ):
+                if not attivita.strip() or not chi.strip():
+                    st.error("Attività e chi la svolge sono obbligatori.")
+                else:
+                    st.session_state.tobe_steps.append(
+                        {
+                            "step": step_num,
+                            "attivita": attivita.strip(),
+                            "chi": chi.strip(),
+                            "strumenti": strumenti.strip(),
+                            "tempo": _get_tempo(tempo_str),
+                            "benefici": benefici.strip(),
+                            "rischi": rischi.strip(),
+                        }
+                    )
+                    for sfx in ["att", "chi", "str", "tempo", "ben", "risk"]:
+                        for pk in [f"input_tobe_{step_num}_{sfx}",
+                                    f"__show_mic_tobe_{step_num}_{sfx}"]:
+                            st.session_state.pop(pk, None)
+                    st.rerun()
+
+        with col_done:
+            if n > 0:
+                if st.button("✓ Concludi TO-BE", use_container_width=True):
+                    st.session_state.tobe_done = True
+                    st.rerun()
+            else:
+                st.caption("Aggiungi almeno uno step per concludere.")
+
+        if n > 0:
+            st.markdown("")
+            if st.button("🗑️ Rimuovi ultimo step"):
+                st.session_state.tobe_steps.pop()
+                st.rerun()
+
+        col_back, _ = st.columns([1, 3])
+        with col_back:
+            if st.button("← Indietro (AS-IS)"):
+                go_to(1)
+
+    with col_ai:
+        _render_tobe_assistant(step_num)
+
+
+# ── TO-BE AI assistant ────────────────────────────────────────────────────────
+
+_TOBE_ASSISTANT_INIT = (
+    "Ciao! 👋 Sono il tuo **Tool Advisor**. "
+    "Dimmi su quale step stai lavorando e ti suggerirò strumenti AI concreti "
+    "— Copilot, Power Automate, Claude, RPA, OCR e altro. "
+    "Puoi anche chiedermi: *'Sostituzione o Augmentation per questo step?'* "
+    "oppure *'Che tool usi per automatizzare le email?'*"
+)
+
+
+def _send_tobe_assistant_message(text: str, api_key: str):
+    msgs = st.session_state.tobe_assistant_messages
+    msgs.append({"role": "user", "content": text})
+    with st.spinner("L'assistente risponde…"):
+        try:
+            reply = generate_tobe_assistant_response(
+                answers=st.session_state.answers,
+                asis_steps=st.session_state.asis_steps,
+                tobe_steps=st.session_state.tobe_steps,
+                chat_history=msgs,
+                api_key=api_key,
+            )
+            msgs.append({"role": "assistant", "content": reply})
+        except Exception as e:
+            msgs.append({"role": "assistant", "content": f"⚠️ Errore: {e}"})
+
+
+def _render_tobe_assistant(step_num: int):
     st.markdown(
-        f'<div class="hint-box">💡 <em>Per ogni step chiediti: l\'AI <strong>sostituisce</strong> '
-        f'(task ripetitivi) o <strong>augmenta</strong> (analisi, decisioni)? '
-        f'Usa 🎤 per dettare.</em></div>',
+        f"""<div style="background:{config.COLORS['primary_dark']}; color:white;
+                        border-radius:8px; padding:0.6rem 1rem; margin-bottom:0.8rem;
+                        font-weight:600; font-size:0.95rem;">
+            🤖 Tool Advisor — Assistente AI
+        </div>""",
         unsafe_allow_html=True,
     )
-    st.markdown(f"#### ➕ Step {step_num}")
 
-    p = f"tobe_{step_num}"
-    attivita = voice_text_area(
-        "Come diventa questa attività con l'AI? *", f"{p}_att",
-        placeholder="Es: Il sistema AI pre-compila la checklist e invia notifiche automatiche",
-        height=90,
-    )
-    chi = voice_text_input(
-        "Chi la svolge? *", f"{p}_chi",
-        placeholder="Es: AI + Ufficio Acquisti (verifica finale)"
-    )
-    col1, col2 = st.columns(2)
-    with col1:
-        strumenti = voice_text_input(
-            "Strumenti / Tecnologie AI", f"{p}_str",
-            placeholder="Es: Copilot, RPA, LLM"
+    api_key = st.session_state.api_key
+    if not api_key:
+        st.info("Inserisci la Anthropic API Key nella schermata iniziale per usare l'assistente.")
+        return
+
+    # Initialize with welcome message
+    if not st.session_state.tobe_assistant_messages:
+        st.session_state.tobe_assistant_messages = [
+            {"role": "assistant", "content": _TOBE_ASSISTANT_INIT}
+        ]
+
+    # Show last N messages (compact)
+    msgs = st.session_state.tobe_assistant_messages
+    for msg in msgs[-8:]:
+        is_ai = msg["role"] == "assistant"
+        bg = "#f4f8fc" if is_ai else "#ffffff"
+        border = f"3px solid {config.COLORS['primary']}" if is_ai else f"1px solid {config.COLORS['border']}"
+        icon = "🤖" if is_ai else "👤"
+        st.markdown(
+            f"""<div style="background:{bg}; border-left:{border};
+                            padding:7px 10px; border-radius:0 5px 5px 0;
+                            margin:4px 0; font-size:0.83rem; line-height:1.5;">
+                <strong>{icon}</strong> {msg['content']}
+            </div>""",
+            unsafe_allow_html=True,
         )
-    with col2:
-        tempo_str = voice_text_input(
-            "Tempo previsto (minuti)", f"{p}_tempo", placeholder="Es: 10"
-        )
-    benefici = voice_text_area(
-        "Benefici attesi", f"{p}_ben",
-        placeholder="Es: -80% tempo raccolta, meno errori, notifiche automatiche",
-        height=85,
+
+    # Text input + send
+    q = st.text_input(
+        "Fai una domanda",
+        key="tobe_ai_q",
+        placeholder=f"Es: Che tool AI uso per lo step {step_num}?",
+        label_visibility="collapsed",
     )
-    rischi = voice_text_input(
-        "Rischi / ostacoli", f"{p}_risk",
-        placeholder="Es: Integrazione SAP, resistenza al cambiamento"
-    )
-
-    st.markdown("")
-    col_add, col_done = st.columns(2)
-
-    with col_add:
-        if st.button(
-            f"+ Aggiungi Step {step_num}", use_container_width=True, type="primary"
-        ):
-            if not attivita.strip() or not chi.strip():
-                st.error("Attività e chi la svolge sono obbligatori.")
-            else:
-                st.session_state.tobe_steps.append(
-                    {
-                        "step": step_num,
-                        "attivita": attivita.strip(),
-                        "chi": chi.strip(),
-                        "strumenti": strumenti.strip(),
-                        "tempo": _get_tempo(tempo_str),
-                        "benefici": benefici.strip(),
-                        "rischi": rischi.strip(),
-                    }
-                )
-                for sfx in ["att", "chi", "str", "tempo", "ben", "risk"]:
-                    for pk in [f"input_tobe_{step_num}_{sfx}",
-                                f"__show_mic_tobe_{step_num}_{sfx}"]:
-                        st.session_state.pop(pk, None)
+    col_send, col_mic, col_clear = st.columns([4, 1, 1])
+    with col_send:
+        if st.button("Invia →", key="tobe_ai_send", use_container_width=True):
+            if q.strip():
+                _send_tobe_assistant_message(q.strip(), api_key)
+                st.session_state.pop("tobe_ai_q", None)
                 st.rerun()
-
-    with col_done:
-        if n > 0:
-            if st.button("✓ Concludi TO-BE", use_container_width=True):
-                st.session_state.tobe_done = True
-                st.rerun()
-        else:
-            st.caption("Aggiungi almeno uno step per concludere.")
-
-    if n > 0:
-        st.markdown("")
-        if st.button("🗑️ Rimuovi ultimo step"):
-            st.session_state.tobe_steps.pop()
+    with col_mic:
+        if st.button("🎤", key="tobe_ai_mic", use_container_width=True, help="Dettatura"):
+            st.session_state["__show_mic_tobe_ai"] = not st.session_state.get(
+                "__show_mic_tobe_ai", False
+            )
+            st.rerun()
+    with col_clear:
+        if st.button("🗑️", key="tobe_ai_clear", use_container_width=True, help="Azzera chat"):
+            st.session_state.tobe_assistant_messages = []
             st.rerun()
 
-    col_back, _ = st.columns([1, 3])
-    with col_back:
-        if st.button("← Indietro (AS-IS)"):
-            go_to(1)
+    # Voice for assistant
+    if st.session_state.get("__show_mic_tobe_ai"):
+        oai_key = st.session_state.get("openai_api_key", "")
+        if not oai_key:
+            st.warning("OpenAI API Key necessaria per il microfono.")
+        else:
+            audio = st.audio_input(
+                "🎙️ Registra domanda", key="audio_tobe_ai", label_visibility="collapsed"
+            )
+            if audio:
+                if st.button("Trascrivi e invia →", key="btn_tr_tobe_ai", type="primary"):
+                    with st.spinner("…"):
+                        try:
+                            text = transcribe_audio(audio, oai_key)
+                            st.session_state["__show_mic_tobe_ai"] = False
+                            st.session_state.pop("audio_tobe_ai", None)
+                            _send_tobe_assistant_message(text, api_key)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Errore: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -251,3 +251,46 @@ def generate_final_analysis(
         messages=[{"role": "user", "content": prompt}],
     )
     return msg.content[0].text
+
+
+# ── TO-BE Tool Advisor ────────────────────────────────────────────────────────
+
+def generate_tobe_assistant_response(
+    answers: dict,
+    asis_steps: list,
+    tobe_steps: list,
+    chat_history: list,
+    api_key: str,
+) -> str:
+    client = anthropic.Anthropic(api_key=api_key)
+    processo = answers.get("q0_processo", "il processo")
+    org = answers.get("q0_org", "")
+
+    system = f"""Sei un esperto di strumenti AI per la trasformazione di processi aziendali. \
+Stai aiutando {answers.get('q0_nome', 'un partecipante')} \
+{('di ' + org) if org else ''} a immaginare il processo "{processo}" con l'AI integrata.
+
+CONTESTO — AS-IS (processo attuale)
+{_steps_to_text(asis_steps, is_tobe=False)}
+
+STEP TO-BE GIÀ DEFINITI
+{_steps_to_text(tobe_steps, is_tobe=True) if tobe_steps else "(nessuno ancora definito)"}
+
+Il tuo ruolo è suggerire strumenti AI concreti e pratici per trasformare ogni step. \
+Quando suggerisci tool, sii specifico: cita prodotti reali come Microsoft Copilot, \
+Power Automate, Claude Projects, ChatGPT Custom GPT, Gemini for Workspace, \
+UiPath, Make/Zapier, Azure AI, modelli OCR, strumenti di sintesi documentale, ecc. \
+Spiega la differenza tra Sostituzione (AI esegue autonomamente) e Augmentation \
+(AI affianca l'umano) con esempi concreti per il loro settore. \
+Rispondi in italiano. Sii diretto, concreto, massimo 5-6 righe per messaggio. \
+Se non conosci il settore specifico, chiedi un dettaglio prima di suggerire."""
+
+    messages = [{"role": m["role"], "content": m["content"]} for m in chat_history]
+
+    msg = client.messages.create(
+        model=config.DEFAULT_MODEL,
+        max_tokens=400,
+        system=system,
+        messages=messages,
+    )
+    return msg.content[0].text.strip()
