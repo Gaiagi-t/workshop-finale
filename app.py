@@ -653,10 +653,10 @@ def render_tobe():
     st.markdown(f"## 🚀 Come cambierà **{processo}** con l'AI?")
 
     # ── AS-IS summary table — always visible ───────────────────────────────────
-    total_asis = sum(int(s.get("tempo") or 0) for s in st.session_state.asis_steps)
+    total_asis_fmt = _format_total(st.session_state.asis_steps, "tempo")
     st.markdown(
         f'<div class="asis-ref-table"><strong>📋 Mappatura AS-IS — riepilogo</strong>'
-        + (f" &nbsp;|&nbsp; ⏱️ Tempo totale: <strong>{total_asis} min</strong>" if total_asis else "")
+        + (f" &nbsp;|&nbsp; ⏱️ Tempo totale: <strong>{total_asis_fmt}</strong>" if total_asis_fmt else "")
         + "</div>",
         unsafe_allow_html=True,
     )
