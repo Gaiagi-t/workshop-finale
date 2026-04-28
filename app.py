@@ -10,6 +10,7 @@ from utils.ai_analysis import (
     generate_chat_response,
     generate_final_analysis,
     generate_tobe_assistant_response,
+    generate_tobe_proactive_for_step,
 )
 from utils.export import generate_html_report
 from utils.voice import transcribe_audio
@@ -99,6 +100,7 @@ def _init():
         "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
         "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),
         "tobe_assistant_messages": [],
+        "tobe_assistant_last_step": 0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -832,11 +834,33 @@ def _render_tobe_assistant(step_num: int):
         st.info("Inserisci la Anthropic API Key nella schermata iniziale per usare l'assistente.")
         return
 
-    # Initialize with welcome message
-    if not st.session_state.tobe_assistant_messages:
-        st.session_state.tobe_assistant_messages = [
-            {"role": "assistant", "content": _TOBE_ASSISTANT_INIT}
-        ]
+    last_step = st.session_state.get("tobe_assistant_last_step", 0)
+    msgs = st.session_state.tobe_assistant_messages
+
+    # Proactive: generate a new suggestion whenever the step changes (or messages are empty)
+    if step_num != last_step or not msgs:
+        st.session_state.tobe_assistant_last_step = step_num
+        asis_steps = st.session_state.asis_steps
+        asis_step = asis_steps[step_num - 1] if step_num <= len(asis_steps) else None
+        new_msgs = []
+        if asis_step:
+            with st.spinner(f"Analisi step {step_num} in corso…"):
+                try:
+                    suggestion = generate_tobe_proactive_for_step(
+                        step_num=step_num,
+                        asis_step=asis_step,
+                        answers=st.session_state.answers,
+                        asis_steps=asis_steps,
+                        tobe_steps=st.session_state.tobe_steps,
+                        api_key=api_key,
+                    )
+                    new_msgs.append({"role": "assistant", "content": suggestion})
+                except Exception as e:
+                    new_msgs.append({"role": "assistant", "content": f"⚠️ Errore: {e}"})
+        else:
+            new_msgs.append({"role": "assistant", "content": _TOBE_ASSISTANT_INIT})
+        st.session_state.tobe_assistant_messages = new_msgs
+        st.rerun()
 
     # Show last N messages (compact)
     msgs = st.session_state.tobe_assistant_messages
@@ -877,6 +901,7 @@ def _render_tobe_assistant(step_num: int):
     with col_clear:
         if st.button("🗑️", key="tobe_ai_clear", use_container_width=True, help="Azzera chat"):
             st.session_state.tobe_assistant_messages = []
+            st.session_state.tobe_assistant_last_step = 0
             st.rerun()
 
     # Voice for assistant
@@ -952,6 +977,24 @@ def render_chat():
     n_user = sum(1 for m in st.session_state.chat_messages if m["role"] == "user")
     show_proceed = n_user >= 3
 
+    # ── Proceed + back buttons — placed BEFORE st.chat_input so they're visible ──
+    if show_proceed:
+        st.markdown("---")
+        col_btn, col_back2 = st.columns([2, 1])
+        with col_btn:
+            if st.button(
+                "Procedi all'Analisi Finale →", type="primary", use_container_width=True
+            ):
+                go_to(4)
+        with col_back2:
+            if st.button("← Torna alla TO-BE", use_container_width=True):
+                go_to(2)
+    else:
+        col_back, _ = st.columns([1, 3])
+        with col_back:
+            if st.button("← Torna alla TO-BE"):
+                go_to(2)
+
     # Voice input for chat
     col_mic, _ = st.columns([1, 3])
     with col_mic:
@@ -981,24 +1024,11 @@ def render_chat():
                         except Exception as e:
                             st.error(f"Errore trascrizione: {e}")
 
+    # ── Chat input — always last (Streamlit renders it as sticky bottom bar) ──
     user_input = st.chat_input("Scrivi la tua risposta…")
     if user_input:
         _send_chat_message(user_input, api_key)
         st.rerun()
-
-    if show_proceed:
-        st.markdown("---")
-        col_btn, _ = st.columns([2, 1])
-        with col_btn:
-            if st.button(
-                "Procedi all'Analisi Finale →", type="primary", use_container_width=True
-            ):
-                go_to(4)
-
-    col_back, _ = st.columns([1, 3])
-    with col_back:
-        if st.button("← Torna alla TO-BE"):
-            go_to(2)
 
 
 def _send_chat_message(text: str, api_key: str):
