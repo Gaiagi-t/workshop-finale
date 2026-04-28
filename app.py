@@ -1,10 +1,8 @@
 import os
 import json
-from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
-import streamlit.components.v1 as components_v1
 
 import config
 from utils.ai_analysis import (
@@ -13,6 +11,7 @@ from utils.ai_analysis import (
     generate_final_analysis,
 )
 from utils.export import generate_html_report
+from utils.voice import transcribe_audio
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -20,12 +19,6 @@ st.set_page_config(
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
-)
-
-# ── Voice component (Web Speech API, browser-native) ──────────────────────────
-_VOICE_COMPONENT_DIR = Path(__file__).parent / "components" / "voice_input"
-_voice_component = components_v1.declare_component(
-    "voice_input", path=str(_VOICE_COMPONENT_DIR)
 )
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -103,6 +96,7 @@ def _init():
         "chat_initialized": False,
         "analysis_result": None,
         "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
+        "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -117,7 +111,7 @@ def go_to(phase: int):
     st.rerun()
 
 
-# ── Voice input helpers ───────────────────────────────────────────────────────
+# ── Voice input helpers (st.audio_input + OpenAI Whisper) ────────────────────
 def _apply_transcript(field_key: str):
     tkey = f"__transcript_{field_key}"
     if tkey in st.session_state:
@@ -131,7 +125,7 @@ def voice_text_input(label: str, field_key: str, placeholder: str = "") -> str:
         val = st.text_input(label, key=f"input_{field_key}", placeholder=placeholder)
     with col_m:
         st.write("")
-        if st.button("🎤", key=f"micbtn_{field_key}", help="Dettatura vocale"):
+        if st.button("🎤", key=f"micbtn_{field_key}", help="Dettatura vocale (Whisper)"):
             st.session_state[f"__show_mic_{field_key}"] = not st.session_state.get(
                 f"__show_mic_{field_key}", False
             )
@@ -152,7 +146,7 @@ def voice_text_area(
     with col_m:
         st.write("")
         st.write("")
-        if st.button("🎤", key=f"micbtn_{field_key}", help="Dettatura vocale"):
+        if st.button("🎤", key=f"micbtn_{field_key}", help="Dettatura vocale (Whisper)"):
             st.session_state[f"__show_mic_{field_key}"] = not st.session_state.get(
                 f"__show_mic_{field_key}", False
             )
@@ -164,11 +158,22 @@ def voice_text_area(
 def _render_mic_widget(field_key: str):
     if not st.session_state.get(f"__show_mic_{field_key}"):
         return
-    transcript = _voice_component(key=f"voice_{field_key}", default=None)
-    if transcript:
-        st.session_state[f"__transcript_{field_key}"] = transcript
-        st.session_state[f"__show_mic_{field_key}"] = False
-        st.rerun()
+    oai_key = st.session_state.get("openai_api_key", "")
+    if not oai_key:
+        st.warning("⚠️ Inserisci la **OpenAI API Key** nella schermata iniziale per usare il microfono.")
+        return
+    audio = st.audio_input("🎙️ Registra", key=f"audio_{field_key}", label_visibility="collapsed")
+    if audio:
+        if st.button("Trascrivi →", key=f"btn_tr_{field_key}", type="primary"):
+            with st.spinner("Trascrizione Whisper in corso…"):
+                try:
+                    text = transcribe_audio(audio, oai_key)
+                    st.session_state[f"__transcript_{field_key}"] = text
+                    st.session_state[f"__show_mic_{field_key}"] = False
+                    st.session_state.pop(f"audio_{field_key}", None)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Errore trascrizione: {e}")
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -364,28 +369,39 @@ Puoi rispondere **scrivendo** o **dettando** con il microfono 🎤 (Chrome/Edge)
             unsafe_allow_html=True,
         )
 
-        # API key — only shown if not already set via env var
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        # API keys — shown only if not already in env vars
+        need_anthropic = not os.environ.get("ANTHROPIC_API_KEY")
+        need_openai = not os.environ.get("OPENAI_API_KEY")
+        if need_anthropic or need_openai:
             st.markdown(
                 f"""
                 <div class="info-card" style="border-left:4px solid {config.COLORS['warning']};">
-                  <div style="font-weight:600; margin-bottom:0.5rem;">⚙️ API Key</div>
+                  <div style="font-weight:600; margin-bottom:0.4rem;">⚙️ API Keys</div>
                   <div style="font-size:0.82rem; color:{config.COLORS['text_muted']};">
-                    Necessaria per l'analisi AI nella Fase 4.
+                    Anthropic: analisi AI &nbsp;|&nbsp; OpenAI: microfono Whisper
                   </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            key_in = st.text_input(
-                "Anthropic API Key",
-                value=st.session_state.api_key,
-                type="password",
-                placeholder="sk-ant-...",
-                label_visibility="collapsed",
-            )
-            if key_in:
-                st.session_state.api_key = key_in
+            if need_anthropic:
+                key_in = st.text_input(
+                    "Anthropic API Key",
+                    value=st.session_state.api_key,
+                    type="password",
+                    placeholder="sk-ant-…",
+                )
+                if key_in:
+                    st.session_state.api_key = key_in
+            if need_openai:
+                oai_in = st.text_input(
+                    "OpenAI API Key (Whisper)",
+                    value=st.session_state.get("openai_api_key", ""),
+                    type="password",
+                    placeholder="sk-…",
+                )
+                if oai_in:
+                    st.session_state.openai_api_key = oai_in
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -781,16 +797,24 @@ def render_chat():
             st.rerun()
 
     if st.session_state.get("__show_mic_chat"):
-        transcript = _voice_component(key="voice_chat", default=None)
-        if transcript:
-            st.session_state["__chat_voice_text"] = transcript
-            st.session_state["__show_mic_chat"] = False
-            st.rerun()
-
-    pending_voice = st.session_state.pop("__chat_voice_text", None)
-    if pending_voice:
-        _send_chat_message(pending_voice, api_key)
-        st.rerun()
+        oai_key = st.session_state.get("openai_api_key", "")
+        if not oai_key:
+            st.warning("⚠️ OpenAI API Key non impostata. Inseriscila nella schermata iniziale.")
+        else:
+            audio_chat = st.audio_input(
+                "🎙️ Registra risposta", key="audio_chat", label_visibility="collapsed"
+            )
+            if audio_chat:
+                if st.button("Trascrivi e invia →", key="btn_tr_chat", type="primary"):
+                    with st.spinner("Trascrizione…"):
+                        try:
+                            text = transcribe_audio(audio_chat, oai_key)
+                            st.session_state["__show_mic_chat"] = False
+                            st.session_state.pop("audio_chat", None)
+                            _send_chat_message(text, api_key)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Errore trascrizione: {e}")
 
     user_input = st.chat_input("Scrivi la tua risposta…")
     if user_input:
