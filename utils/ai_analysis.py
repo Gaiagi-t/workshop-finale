@@ -255,6 +255,100 @@ def generate_final_analysis(
 
 # ── TO-BE Tool Advisor ────────────────────────────────────────────────────────
 
+_TRAINING_TOOLS = """
+STRUMENTI AI TRATTATI NEL CORSO (da usare come riferimento primario nei suggerimenti):
+
+ASSISTENTI GENERALI: ChatGPT (OpenAI), Claude (Anthropic), Gemini (Google),
+Microsoft Copilot, Perplexity — per generazione testi, analisi, sintesi, Q&A, ricerca.
+
+AGENTI/GPT PERSONALIZZATI: ChatGPT Custom GPT, Claude Projects, Gemini Gems,
+Copilot Studio — per creare assistenti specializzati con knowledge base aziendale.
+
+CODING & SVILUPPO: GitHub Copilot, OpenAI Codex, Gemini 2.5, Qwen3 —
+per generare, revisionare e automatizzare codice.
+
+CREATIVITÀ — IMMAGINI & MOCKUP: DALL-E, Adobe Firefly, Canva AI, Recraft,
+Bing Copilot, Image3 — per immagini, visual, mockup, asset grafici.
+
+CREATIVITÀ — INFOGRAFICHE: Napkin.ai, Infografix, Piktochart —
+per visualizzare dati, processi, report in modo visivo.
+
+CREATIVITÀ — VIDEO & AVATAR: Runway, Lumen5, Lumalabs (video);
+Heygen, Synthesia (avatar digitali) — per contenuti video professionali.
+
+CREATIVITÀ — AUDIO & PRESENTAZIONI: ElevenLabs (voce/narrazione);
+Loudly, Suno, Udio, Stable Audio (musica); SlidesAI, Tome, Gamma (presentazioni).
+
+PROJECT MANAGEMENT: NotionAI, TrelloAI, Asana (Graph AI), ClickUp,
+Monday.com, Wrike, Smartsheet AI — per pianificazione, task, Gantt, report.
+
+AUTOMAZIONI: Zapier, Make/Integromat — per connettere app e automatizzare
+workflow senza codice, con o senza LLM integrato.
+
+DISTINZIONE FONDAMENTALE (insegnata nel corso):
+• Automazioni: regole fisse predefinite, nessuna AI, esecuzione automatica
+• Automazioni AI: regole + LLM, ancora vincolate a logica predefinita
+• Agenti AI: autonomia decisionale, pianificano azioni in base agli obiettivi
+• Sostituzione: AI esegue il task autonomamente (attività ripetitive/standardizzate)
+• Augmentation: AI affianca e potenzia l'umano (analisi complessa, creatività, decisioni)
+"""
+
+
+def _advisor_system(answers: dict, asis_steps: list, tobe_steps: list) -> str:
+    processo = answers.get("q0_processo", "il processo")
+    org = answers.get("q0_org", "")
+    nome = answers.get("q0_nome", "il partecipante")
+    return (
+        f"Sei un Tool Advisor esperto di strumenti AI per la trasformazione di processi "
+        f"aziendali. Stai supportando {nome}{(' di ' + org) if org else ''} "
+        f"nella mappatura TO-BE del processo \"{processo}\".\n\n"
+        f"{_TRAINING_TOOLS}\n"
+        f"MAPPA AS-IS\n{_steps_to_text(asis_steps, is_tobe=False)}\n\n"
+        f"STEP TO-BE GIÀ DEFINITI\n"
+        f"{_steps_to_text(tobe_steps, is_tobe=True) if tobe_steps else '(nessuno ancora)'}\n\n"
+        "Rispondi in italiano. Sii concreto e diretto. "
+        "Usa i nomi esatti dei tool del corso quando pertinenti. "
+        "Massimo 5-6 righe per risposta."
+    )
+
+
+def generate_tobe_proactive_for_step(
+    step_num: int,
+    asis_step: dict,
+    answers: dict,
+    asis_steps: list,
+    tobe_steps: list,
+    api_key: str,
+) -> str:
+    """Generate a proactive suggestion for a specific AS-IS step."""
+    client = anthropic.Anthropic(api_key=api_key)
+
+    asis_desc = (
+        f"Step {asis_step.get('step')}: {asis_step.get('attivita', '—')} | "
+        f"Chi: {asis_step.get('chi', '—')} | "
+        f"Strumenti attuali: {asis_step.get('strumenti') or 'non specificati'} | "
+        f"Problemi: {asis_step.get('problemi') or 'non specificati'}"
+    )
+
+    prompt = (
+        f"{_advisor_system(answers, asis_steps, tobe_steps)}\n\n"
+        f"STEP ATTUALE DA TRASFORMARE:\n{asis_desc}\n\n"
+        "Genera un messaggio PROATTIVO che:\n"
+        "1. Analizza brevemente questo step specifico\n"
+        "2. Suggerisce 2-3 strumenti AI concreti del corso più adatti\n"
+        "3. Indica se è più indicata Sostituzione o Augmentation\n"
+        "4. Termina con UNA domanda concreta per capire meglio il contesto\n"
+        "Non iniziare con 'Ciao' o formule di cortesia. Vai dritto all'analisi."
+    )
+
+    msg = client.messages.create(
+        model=config.DEFAULT_MODEL,
+        max_tokens=350,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return msg.content[0].text.strip()
+
+
 def generate_tobe_assistant_response(
     answers: dict,
     asis_steps: list,
@@ -263,28 +357,7 @@ def generate_tobe_assistant_response(
     api_key: str,
 ) -> str:
     client = anthropic.Anthropic(api_key=api_key)
-    processo = answers.get("q0_processo", "il processo")
-    org = answers.get("q0_org", "")
-
-    system = f"""Sei un esperto di strumenti AI per la trasformazione di processi aziendali. \
-Stai aiutando {answers.get('q0_nome', 'un partecipante')} \
-{('di ' + org) if org else ''} a immaginare il processo "{processo}" con l'AI integrata.
-
-CONTESTO — AS-IS (processo attuale)
-{_steps_to_text(asis_steps, is_tobe=False)}
-
-STEP TO-BE GIÀ DEFINITI
-{_steps_to_text(tobe_steps, is_tobe=True) if tobe_steps else "(nessuno ancora definito)"}
-
-Il tuo ruolo è suggerire strumenti AI concreti e pratici per trasformare ogni step. \
-Quando suggerisci tool, sii specifico: cita prodotti reali come Microsoft Copilot, \
-Power Automate, Claude Projects, ChatGPT Custom GPT, Gemini for Workspace, \
-UiPath, Make/Zapier, Azure AI, modelli OCR, strumenti di sintesi documentale, ecc. \
-Spiega la differenza tra Sostituzione (AI esegue autonomamente) e Augmentation \
-(AI affianca l'umano) con esempi concreti per il loro settore. \
-Rispondi in italiano. Sii diretto, concreto, massimo 5-6 righe per messaggio. \
-Se non conosci il settore specifico, chiedi un dettaglio prima di suggerire."""
-
+    system = _advisor_system(answers, asis_steps, tobe_steps)
     messages = [{"role": m["role"], "content": m["content"]} for m in chat_history]
 
     msg = client.messages.create(

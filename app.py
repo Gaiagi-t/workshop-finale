@@ -115,6 +115,76 @@ def go_to(phase: int):
     st.rerun()
 
 
+# ── Demo data ─────────────────────────────────────────────────────────────────
+
+_DEMO_ANSWERS = {
+    "q0_nome": "Demo Utente",
+    "q0_ruolo": "Responsabile Acquisti",
+    "q0_org": "Azienda Demo S.p.A.",
+    "q0_processo": "Gestione richieste di acquisto",
+    "q0_descrizione": (
+        "Processo che copre l'intero ciclo delle richieste di acquisto: "
+        "dalla ricezione della richiesta interna fino all'emissione dell'ordine e all'archiviazione. "
+        "Coinvolge acquisti, controllo, management e fornitori esterni. Durata media 3-5 giorni."
+    ),
+}
+
+_DEMO_ASIS = [
+    {"step": 1, "attivita": "Ricezione richiesta acquisto via email",
+     "chi": "Ufficio Acquisti", "strumenti": "Email, Excel",
+     "tempo": "30 min", "problemi": "Richieste spesso incomplete o in formati diversi, difficile tracciare"},
+    {"step": 2, "attivita": "Verifica disponibilità budget",
+     "chi": "Controller", "strumenti": "SAP, Excel",
+     "tempo": "45 min", "problemi": "Accesso lento a SAP, dati non sempre aggiornati"},
+    {"step": 3, "attivita": "Ricerca e selezione fornitori",
+     "chi": "Buyer", "strumenti": "Email, telefono, database fornitori",
+     "tempo": "2 ore", "problemi": "Processo completamente manuale, difficile confrontare offerte"},
+    {"step": 4, "attivita": "Negoziazione e approvazione interna",
+     "chi": "Manager + Buyer", "strumenti": "Email, telefono",
+     "tempo": "2 giorni", "problemi": "Lunghi tempi di attesa, catena di email difficile da seguire"},
+    {"step": 5, "attivita": "Emissione ordine e archiviazione documentale",
+     "chi": "Ufficio Acquisti", "strumenti": "SAP, email",
+     "tempo": "60 min", "problemi": "Doppia immissione dati, errori frequenti, archivio non ricercabile"},
+]
+
+_DEMO_TOBE = [
+    {"step": 1, "attivita": "Acquisizione richiesta tramite form intelligente AI",
+     "chi": "Richiedente (autonomo)", "strumenti": "Copilot Studio (form guidato)",
+     "tempo": "10 min", "benefici": "Richieste sempre complete, routing automatico al buyer corretto",
+     "rischi": "Adozione del nuovo sistema da parte degli utenti"},
+    {"step": 2, "attivita": "Verifica budget automatica in tempo reale",
+     "chi": "AI + Controller (eccezioni)", "strumenti": "Claude (analisi), integrazione SAP API",
+     "tempo": "5 min", "benefici": "Risposta istantanea, dati sempre aggiornati, zero attesa",
+     "rischi": "Integrazione tecnica con SAP"},
+    {"step": 3, "attivita": "Ricerca e ranking fornitori assistita da AI",
+     "chi": "AI + Buyer (scelta finale)", "strumenti": "ChatGPT (analisi offerte), Perplexity (market intel)",
+     "tempo": "30 min", "benefici": "-75% tempo ricerca, confronto oggettivo con scoring automatico",
+     "rischi": "Qualità e aggiornamento del database fornitori"},
+    {"step": 4, "attivita": "Approvazione digitale con workflow automatico",
+     "chi": "Manager", "strumenti": "Microsoft Copilot, Make (workflow)",
+     "tempo": "2 ore", "benefici": "Da 2 giorni a 2 ore, piena tracciabilità e audit trail",
+     "rischi": "Resistenza al cambiamento del management"},
+    {"step": 5, "attivita": "Emissione ordine automatica e archiviazione intelligente",
+     "chi": "AI (esecuzione autonoma)", "strumenti": "Make (automazione), SAP, NotionAI (archivio)",
+     "tempo": "5 min", "benefici": "Zero errori manuali, ricerca full-text istantanea su tutti i documenti",
+     "rischi": "Gestione casi eccezionali non previsti"},
+]
+
+
+def _autocompile():
+    st.session_state.answers = dict(_DEMO_ANSWERS)
+    st.session_state.asis_steps = [dict(s) for s in _DEMO_ASIS]
+    st.session_state.tobe_steps = [dict(s) for s in _DEMO_TOBE]
+    st.session_state.asis_done = True
+    st.session_state.tobe_done = True
+    st.session_state.chat_messages = []
+    st.session_state.chat_initialized = False
+    st.session_state.analysis_result = None
+    st.session_state.tobe_assistant_messages = []
+    st.session_state.tobe_assistant_last_step = 0
+    go_to(3)
+
+
 # ── Voice input helpers (st.audio_input + OpenAI Whisper) ────────────────────
 def _apply_transcript(field_key: str):
     tkey = f"__transcript_{field_key}"
@@ -266,25 +336,36 @@ sub = (
     else ("Bentornato/a!" if nome else "Workshop interattivo IFAB")
 )
 
-st.markdown(
-    f"""
-    <div class="main-header">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <div>
-          <div style="font-size:0.78rem; opacity:0.8; margin-bottom:0.2rem;">
-            FONDAZIONE IFAB · {config.WORKSHOP_SUBTITLE}
+col_hdr, col_demo_btn = st.columns([5, 1])
+with col_hdr:
+    st.markdown(
+        f"""
+        <div class="main-header">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <div style="font-size:0.78rem; opacity:0.8; margin-bottom:0.2rem;">
+                FONDAZIONE IFAB · {config.WORKSHOP_SUBTITLE}
+              </div>
+              <div style="font-size:1.4rem; font-weight:700; color:white;">
+                {config.WORKSHOP_TITLE}
+              </div>
+              <div style="font-size:0.87rem; opacity:0.85; margin-top:0.18rem;">{sub}</div>
+            </div>
+            <div style="font-size:2.6rem;">🔍</div>
           </div>
-          <div style="font-size:1.4rem; font-weight:700; color:white;">
-            {config.WORKSHOP_TITLE}
-          </div>
-          <div style="font-size:0.87rem; opacity:0.85; margin-top:0.18rem;">{sub}</div>
         </div>
-        <div style="font-size:2.6rem;">🔍</div>
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+        """,
+        unsafe_allow_html=True,
+    )
+with col_demo_btn:
+    st.write("")
+    st.write("")
+    if st.button(
+        "⚡ Demo rapida",
+        use_container_width=True,
+        help="Precompila con dati di esempio e vai direttamente alla fase di approfondimento",
+    ):
+        _autocompile()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Phase 0 — Welcome
@@ -974,26 +1055,17 @@ def render_chat():
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    n_user = sum(1 for m in st.session_state.chat_messages if m["role"] == "user")
-    show_proceed = n_user >= 3
-
     # ── Proceed + back buttons — placed BEFORE st.chat_input so they're visible ──
-    if show_proceed:
-        st.markdown("---")
-        col_btn, col_back2 = st.columns([2, 1])
-        with col_btn:
-            if st.button(
-                "Procedi all'Analisi Finale →", type="primary", use_container_width=True
-            ):
-                go_to(4)
-        with col_back2:
-            if st.button("← Torna alla TO-BE", use_container_width=True):
-                go_to(2)
-    else:
-        col_back, _ = st.columns([1, 3])
-        with col_back:
-            if st.button("← Torna alla TO-BE"):
-                go_to(2)
+    st.markdown("---")
+    col_btn, col_back2 = st.columns([2, 1])
+    with col_btn:
+        if st.button(
+            "Procedi all'Analisi Finale →", type="primary", use_container_width=True
+        ):
+            go_to(4)
+    with col_back2:
+        if st.button("← Torna alla TO-BE", use_container_width=True):
+            go_to(2)
 
     # Voice input for chat
     col_mic, _ = st.columns([1, 3])
